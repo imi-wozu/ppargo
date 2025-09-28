@@ -33,9 +33,7 @@ enum Commands {
     },
 
     /// Create a new cppargo package in an existing directory
-    Init {
-        name: String,
-    },
+    Init,
 
     /// 의존성 설치 (vcpkg backend) + manifest 자동 업데이트
     // add {
@@ -58,8 +56,8 @@ fn main() {
         Commands::New { name } =>{
             commands::new::execute(&name);
         }
-        Commands::Init { name } => {
-           // commands::init::execute(&name);
+        Commands::Init => {
+           commands::init::execute();
         }
         Commands::Build =>{
             commands::build::execute();

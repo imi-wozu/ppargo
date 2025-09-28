@@ -1,32 +1,42 @@
-// use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+};
 
-// use crate::core::manifest::{Manifest, Package};
+use crate::core::{
+    manifest::{Manifest, Package},
+    templates,
+};
 
-// pub fn execute(name: &str) {
-//     let dir = Path::new(name);
-//     fs::create_dir_all(dir.join("src")).expect("Failed to create project directory");
+pub fn execute() {
+    let current_dir = env::current_dir().expect("Failed to get current directory");
 
-//     // create Cppargo.toml
-//     let manifest = Manifest {
-//         package: Package {
-//             name: name.to_string(),
-//             version: "0.1.0".to_string(),
-//         },
-//         dependencies: HashMap::new(),
-//     };
+    let name = current_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from)
+        .unwrap_or_else(|| "my_project".to_string());
 
-//     let toml_str = toml::to_string(&manifest).expect("Failed to serialize manifest");
-//     fs::write(dir.join("Cppargo.toml"), toml_str).expect("Failed to write Cppargo.toml");
+    create_project_structure(&current_dir, &name);
 
-//     // basic main.cpp
-//     let main_cpp = r#"#include <iostream>
+    println!("Initialized C++ project `{}`", name);
+}
 
-// int main() {
-//     std::cout << "Hello, world!" << std::endl;
-//     return 0;
-// }"#;
+fn create_project_structure(dir: &PathBuf, name: &str) {
+    // create directories
+    fs::create_dir_all(dir.join("src")).expect("Failed to create project directory");
 
-//     fs::write(dir.join("src").join("main.cpp"), main_cpp).expect("Failed to write main.cpp");
+    // ceate ppargo.toml
+    let manifest: Manifest = templates::crate_manifest(name);
+    let toml_str = toml::to_string(&manifest).expect("Failed to serialize manifest");
+    fs::write(dir.join("ppargo.toml"), toml_str).expect("Failed to write ppargo.toml");
 
-//     println!("Initialized C++ project `{}`", name);
-// }
+    // create source files
+    let main_cpp = templates::get_main_template();
+    fs::write(dir.join("src").join("main.cpp"), main_cpp).expect("Failed to write main.cpp");
+
+    // create .gitignore
+    let gitignore = templates::get_gitignore_template();
+    fs::write(dir.join(".gitignore"), gitignore).expect("Failed to write .gitignore");
+}
