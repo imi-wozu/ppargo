@@ -1,13 +1,13 @@
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod build;
 mod cli;
 mod core;
-// mod package;
-// mod build;
+mod package;
 // mod util;
 
 use cli::commands;
-
 
 #[derive(Parser)]
 #[command(name = "argo")]
@@ -15,7 +15,6 @@ use cli::commands;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-
     // /// Path to Cppargo.toml
     // #[arg(long, global = true)]
     // manifest_path: Option<PathBuf>,
@@ -41,30 +40,36 @@ enum Commands {
     // },
 
     /// Complie the current package
-    Build,
+    #[clap(alias = "b")]
+    Build {
+        #[arg(long, short = 'r', help = "Build in release mode")]
+        release: bool,
+    },
 
     /// Run the package
+    #[clap(alias = "r")]
     Run,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let cli = Cli::parse();
     // Initialize logger
     // util::logger::init_logger(cli.verbose)?;
 
     match cli.command {
-        Commands::New { name } =>{
+        Commands::New { name } => {
             commands::new::execute(&name);
         }
         Commands::Init => {
-           commands::init::execute();
+            commands::init::execute();
         }
-        Commands::Build =>{
-            commands::build::execute();
+        Commands::Build { release } => {
+            commands::build::execute(release);
         }
         Commands::Run => {
-            commands::run::execute();
+            commands::run::execute(false);
         }
     }
-}
 
+    Ok(())
+}

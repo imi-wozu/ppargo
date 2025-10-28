@@ -1,5 +1,8 @@
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, result::Result, path::Path, fs};
+use std::{collections::HashMap, env, fs, path::{Path, PathBuf}};
+
+use crate::core::manifest;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
@@ -8,14 +11,15 @@ pub struct Manifest {
     #[serde(default)]
     pub dependencies: HashMap<String, String>,
 
+    // #[serde(default)]
+    pub toolchain: Toolchain,
+
     // #[serde(default, rename = "dev-dependencies")]
     // pub dev_dependencies: HashMap<String, Dependency>,
     
     // #[serde(default)]
     // pub build: BuildConfig,
     
-    // #[serde(default)]
-    // pub toolchain: Toolchain,
     
     // #[serde(skip_serializing_if = "Option::is_none")]
     // pub workspace: Option<Workspace>,
@@ -31,6 +35,23 @@ pub struct Package {
 
     #[serde(default = "default_edition")]
     pub edition: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Toolchain {
+    #[serde(default = "default_compiler")]
+    pub compiler: String,
+    #[serde(default = "default_linker")]
+    pub linker: String,
+}
+
+impl Default for Toolchain {
+    fn default() -> Self {
+        Self {
+            compiler: default_compiler(),
+            linker: default_linker(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,10 +84,36 @@ pub struct BuildConfig {
 //     pub libs: Vec<String>,
 }
 
+impl Manifest {
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self>{
+        let path = path.as_ref();
+        let content = fs::read_to_string(path).context(format!("Failed to read manifest at {}", path.display()))?;
+
+        Ok(toml::from_str(&content).context("Invalid ppargo.toml format")?)
+    }
+}
+
+
+/// Find ppargo.tole in current directory or any parent directory
+/// this walks up the directory tree until it finds ppargo toml
+pub fn find_manifest() -> Result<PathBuf> {
+    let mut current = env::current_dir()?;
+
+    loop {
+        let manifest_path = current.join("ppargo.toml");
+        if manifest_path.exists() {
+            return Ok(manifest_path);
+        }
+
+        if !current.pop() {
+            bail!("Could not find ppargo.toml in current directory or any parent directory");
+        }
+    }
+}
+
 
 
 // cwd = current working directory
-
 pub fn load_manifest_from_cwd() -> Result<Manifest, String> {
     let manifest_path = Path::new("ppargo.toml");
     if !manifest_path.exists() {
@@ -87,4 +134,12 @@ pub fn load_manifest_from_cwd() -> Result<Manifest, String> {
 
 fn default_edition() -> String {
     "cpp17".to_string()
+}
+
+fn default_compiler() -> String {
+    "clang".to_string()
+}
+
+fn default_linker() -> String {
+    "lld".to_string()
 }

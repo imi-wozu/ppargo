@@ -1,39 +1,18 @@
-use std::{result::Result, path::{Path, PathBuf}, fs, process::Command};
+use anyhow::Result;
+use std::{path::{Path, PathBuf}, fs, process::Command};
 
-use crate::core::manifest::load_manifest_from_cwd;
+use crate::{build::{self, manager::BuildManager}, core::manifest::{self, find_manifest, load_manifest_from_cwd}};
 
 
-pub fn execute() {
-    // build before running
-    println!("Building before running...");
-    super::build::execute();
+pub fn execute(release: bool) -> Result<()> {
+    // First build the project
+    super::build::execute(release)?;
 
-    let manifest = match load_manifest_from_cwd() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("{}", e);
-            return;
-        }
-    };
+    let manifest_path = find_manifest()?;
 
-    let exe = Path::new("target")
-        .join("debug")
-        .join(&format!("{}.exe", manifest.package.name));
-    if !exe.exists() {
-        eprintln!("Executable not found. Build may have failed.");
-        return;
-    }
+    let project_root = manifest_path.parent().ok_or_else(|| anyhow::anyhow!("Invalid manifest path"))?;
 
-    println!("Running `{}`...\n", manifest.package.name);
-    let status = Command::new(exe).status();
-    match status {
-        Ok(s) => {
-            if !s.success() {
-                eprintln!("Program exited with non-zero status: {:?}", s.code());
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to run executable: {}", e);
-        }
-    }
+    let manager = BuildManager::new(project_root)?;
+    manager.run(release)?;
+    Ok(())
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::core::manifest::{Manifest, Package};
+use crate::core::manifest::{Manifest, Package, Toolchain};
 
 
 pub fn crate_manifest(name: &str) -> Manifest {
@@ -11,6 +11,7 @@ pub fn crate_manifest(name: &str) -> Manifest {
             edition: "cpp17".to_string(),
         },
         dependencies: HashMap::new(),
+        toolchain: Toolchain::default(),
     }
 }
 

@@ -1,16 +1,18 @@
+use anyhow::{Ok, Result};
 use std::{collections::HashMap, fs, path::{Path, PathBuf}};
 
 use crate::core::{manifest::{Manifest, Package}, templates};
 
-pub fn execute(name: &str) {
+pub fn execute(name: &str) -> Result<()> {
     let project_dir = PathBuf::from(name);
 
     create_project_structure(&project_dir, name);
 
     println!("Initialized C++ project `{}`", name);
+    Ok(())
 }
 
-fn create_project_structure(dir: &PathBuf, name: &str,) {
+fn create_project_structure(dir: &PathBuf, name: &str,) -> Result<()> {
     // create directories
     fs::create_dir_all(dir.join("src")).expect("Failed to create project directory");
 
@@ -26,4 +28,6 @@ fn create_project_structure(dir: &PathBuf, name: &str,) {
     // create .gitignore
     let gitignore = templates::get_gitignore_template();
     fs::write(dir.join(".gitignore"), gitignore).expect("Failed to write .gitignore");
+
+    Ok(())
 }
