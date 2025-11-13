@@ -29,7 +29,7 @@ impl BuildManager {
             project_root: project_root.to_path_buf(),
             manifest,
             compiler,
-            package_manager: PackageManager::new(),
+            package_manager: PackageManager::new(project_root)?,
         })
     }
 

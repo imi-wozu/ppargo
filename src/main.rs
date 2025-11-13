@@ -15,7 +15,7 @@ use cli::commands;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-    // /// Path to Cppargo.toml
+    // /// Path to ppargo.toml
     // #[arg(long, global = true)]
     // manifest_path: Option<PathBuf>,
 
@@ -26,18 +26,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    // Create a new cppargo package
+    /// Create a new ppargo package
     New {
         name: String,
     },
 
-    /// Create a new cppargo package in an existing directory
+    /// Create a new ppargo package in an existing directory
     Init,
 
-    /// 의존성 설치 (vcpkg backend) + manifest 자동 업데이트
-    // add {
-    //     package: String,
-    // },
+    /// Add dependencies to a manifest file
+    add {
+        package: String,
+    },
 
     /// Complie the current package
     #[clap(alias = "b")]
@@ -58,16 +58,19 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::New { name } => {
-            commands::new::execute(&name);
+            commands::new::execute(&name)?;
         }
         Commands::Init => {
-            commands::init::execute();
+            commands::init::execute()?;
+        }
+        Commands::add { package } => {
+
         }
         Commands::Build { release } => {
-            commands::build::execute(release);
+            commands::build::execute(release)?;
         }
         Commands::Run => {
-            commands::run::execute(false);
+            commands::run::execute(false)?;
         }
     }
 
