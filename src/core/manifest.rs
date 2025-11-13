@@ -48,10 +48,29 @@ pub struct Toolchain {
     pub linker: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageManagerType {
+    Vcpkg,
+    Ppargo,
+}
+
+impl Default for PackageManagerType {
+    fn default() -> Self {
+        PackageManagerType::Vcpkg
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Features {
     #[serde(default = "default_packages_enabled")]
     pub packages: bool,
+
+    #[serde(default)]
+    pub package_manager: PackageManagerType,
+
+    #[serde(default)]
+    pub vcpkg_root: Option<PathBuf>,
 }
 
 impl Default for Toolchain {
@@ -67,6 +86,8 @@ impl Default for Features {
     fn default() -> Self {
         Self {
             packages: default_packages_enabled(),
+            package_manager: PackageManagerType::default(),
+            vcpkg_root: None,
         }
     }
 }

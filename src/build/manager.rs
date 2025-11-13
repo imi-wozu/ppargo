@@ -26,7 +26,7 @@ impl BuildManager {
         let compiler = Self::find_compiler(&manifest.toolchain.compiler)?;
 
         let package_manager = if manifest.features.packages {
-            Some(PackageManager::new(project_root)?)
+            Some(PackageManager::new(project_root, &manifest)?)
         } else {
             None
         };

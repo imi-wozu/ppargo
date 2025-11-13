@@ -1,62 +1,38 @@
-use anyhow::{Result, Context, bail};
+use anyhow::Result;
 use std::{
     env,
-    fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
-use crate::core::manifest::Manifest;
+use crate::core::manifest::{Manifest, PackageManagerType};
 
 pub struct PackageManager {
-    vcpkg_root: PathBuf,
-    triplet: String,
-    project_root: PathBuf,
+    pub manager_type: PackageManagerType,
+    pub vcpkg_root: Option<PathBuf>,
+    pub triplet: Option<String>,
+    pub project_root: PathBuf,
 }
 
 impl PackageManager {
-    pub fn new(project_root: &Path) -> Result<Self> {
-        let vcpkg_root = Self::find_vcpkg()?;
-        let triplet = Self::detect_triplet();
-        
+    pub fn new(project_root: &Path, manifest: &Manifest) -> Result<Self> {
+        let (manager_type, vcpkg_root, triplet) = match manifest.features.package_manager {
+            PackageManagerType::Vcpkg => {
+                let root = manifest.features.vcpkg_root.clone()
+                    .ok_or_else(|| anyhow::anyhow!("vcpkg_root must be specified in features when using vcpkg"))?;
+                let trip = Self::detect_triplet();
+                (PackageManagerType::Vcpkg, Some(root), Some(trip))
+            }
+            PackageManagerType::Ppargo => {
+                (PackageManagerType::Ppargo, None, None)
+            }
+        };
+
         Ok(Self {
+            manager_type,
             vcpkg_root,
             triplet,
             project_root: project_root.to_path_buf(),
         })
-    }
-
-    fn find_vcpkg() -> Result<PathBuf> {
-        // Try environment variable
-        if let Ok(root) = env::var("VCPKG_ROOT") {
-            let path = PathBuf::from(&root);
-            if path.exists() && path.join("vcpkg").exists() {
-                return Ok(path);
-            }
-        }
-
-        // Try common locations
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get home directory"))?;
-        
-        let common_paths = vec![
-            home.join("vcpkg"),
-            home.join(".vcpkg"),
-            PathBuf::from("/usr/local/vcpkg"),
-            PathBuf::from("C:\\vcpkg"),
-        ];
-
-        for path in common_paths {
-            if path.exists() && path.join("vcpkg").exists() {
-                return Ok(path);
-            }
-        }
-
-        bail!(
-            "vcpkg not found. Please install vcpkg and set VCPKG_ROOT environment variable.\n  \
-             Install: git clone https://github.com/microsoft/vcpkg.git ~/vcpkg\n  \
-             Then run: cd ~/vcpkg && ./bootstrap-vcpkg.sh"
-        )
     }
 
     fn detect_triplet() -> String {
@@ -77,15 +53,42 @@ impl PackageManager {
         }.to_string()
     }
 
-    pub fn install_dependencies(&self, manifest: &Manifest) -> Result<()> {
-        Ok(())
+    pub fn install_dependencies(&self, _manifest: &Manifest) -> Result<()> {
+        match self.manager_type {
+            PackageManagerType::Vcpkg => {
+                // vcpkg dependency installation would happen here
+                Ok(())
+            }
+            PackageManagerType::Ppargo => {
+                // ppargo dependency installation would happen here
+                Ok(())
+            }
+        }
     }
 
     pub fn get_include_path(&self) -> Vec<PathBuf> {
-        vec![]
+        match self.manager_type {
+            PackageManagerType::Vcpkg => {
+                if let Some(vcpkg_root) = &self.vcpkg_root {
+                    vec![vcpkg_root.join("installed").join("include")]
+                } else {
+                    vec![]
+                }
+            }
+            PackageManagerType::Ppargo => vec![],
+        }
     }
 
     pub fn get_lib_paths(&self) -> Vec<PathBuf> {
-        vec![]
+        match self.manager_type {
+            PackageManagerType::Vcpkg => {
+                if let (Some(vcpkg_root), Some(triplet)) = (&self.vcpkg_root, &self.triplet) {
+                    vec![vcpkg_root.join("installed").join(triplet).join("lib")]
+                } else {
+                    vec![]
+                }
+            }
+            PackageManagerType::Ppargo => vec![],
+        }
     }
 }
