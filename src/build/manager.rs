@@ -16,7 +16,7 @@ pub struct BuildManager {
     manifest: Manifest,
     compiler: PathBuf,
     // linker: Option<PathBuf>,
-    package_manager: PackageManager,
+    package_manager: Option<PackageManager>,
 }
 
 impl BuildManager {
@@ -25,11 +25,17 @@ impl BuildManager {
         let manifest = Manifest::load(&manifest_path)?;
         let compiler = Self::find_compiler(&manifest.toolchain.compiler)?;
 
+        let package_manager = if manifest.features.packages {
+            Some(PackageManager::new(project_root)?)
+        } else {
+            None
+        };
+
         Ok(Self {
             project_root: project_root.to_path_buf(),
             manifest,
             compiler,
-            package_manager: PackageManager::new(project_root)?,
+            package_manager,
         })
     }
 
@@ -43,8 +49,10 @@ impl BuildManager {
             self.manifest.package.name, self.manifest.package.version
         );
 
-        // Ensure dependencies are installed
-        self.package_manager.install_dependencies(&self.manifest)?;
+        // Ensure dependencies are installed (if enabled)
+        if let Some(pm) = &self.package_manager {
+            pm.install_dependencies(&self.manifest)?;
+        }
 
         let profile = if release { "release" } else { "debug" };
         let build_dir = self.get_build_dir(profile);
@@ -173,9 +181,11 @@ impl BuildManager {
             cmd.arg(format!("-I{}", include_dir.display()));
         }
 
-        // Package include paths
-        for path in self.package_manager.get_include_path() {
-            cmd.arg(format!("-I{}", path.display()));
+        // Package include paths (if enabled)
+        if let Some(pm) = &self.package_manager {
+            for path in pm.get_include_path() {
+                cmd.arg(format!("-I{}", path.display()));
+            }
         }
 
         let output_result = cmd.output().context("Failed to execute compiler")?;
@@ -208,9 +218,11 @@ impl BuildManager {
             cmd.arg("-s"); // Strip symbols
         }
 
-        // Library paths
-        for path in self.package_manager.get_lib_paths() {
-            cmd.arg(format!("-L{}", path.display()));
+        // Library paths (if enabled)
+        if let Some(pm) = &self.package_manager {
+            for path in pm.get_lib_paths() {
+                cmd.arg(format!("-L{}", path.display()));
+            }
         }
 
         // Execute linking

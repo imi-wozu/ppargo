@@ -4,6 +4,8 @@ use crate::core::manifest::{Manifest, Package, Toolchain};
 
 
 pub fn crate_manifest(name: &str) -> Manifest {
+    use crate::core::manifest::Features;
+    
     Manifest {
         package: Package {
             name: name.to_string(),
@@ -12,6 +14,7 @@ pub fn crate_manifest(name: &str) -> Manifest {
         },
         dependencies: HashMap::new(),
         toolchain: Toolchain::default(),
+        features: Features::default(),
     }
 }
 

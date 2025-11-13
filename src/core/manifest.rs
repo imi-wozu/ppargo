@@ -14,6 +14,9 @@ pub struct Manifest {
     // #[serde(default)]
     pub toolchain: Toolchain,
 
+    #[serde(default)]
+    pub features: Features,
+
     // #[serde(default, rename = "dev-dependencies")]
     // pub dev_dependencies: HashMap<String, Dependency>,
     
@@ -45,11 +48,25 @@ pub struct Toolchain {
     pub linker: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Features {
+    #[serde(default = "default_packages_enabled")]
+    pub packages: bool,
+}
+
 impl Default for Toolchain {
     fn default() -> Self {
         Self {
             compiler: default_compiler(),
             linker: default_linker(),
+        }
+    }
+}
+
+impl Default for Features {
+    fn default() -> Self {
+        Self {
+            packages: default_packages_enabled(),
         }
     }
 }
@@ -142,4 +159,8 @@ fn default_compiler() -> String {
 
 fn default_linker() -> String {
     "lld".to_string()
+}
+
+fn default_packages_enabled() -> bool {
+    true
 }
