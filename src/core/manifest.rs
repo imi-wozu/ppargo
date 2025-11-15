@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::core::manifest;
+use crate::{core::manifest, util::print_error};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
@@ -142,7 +142,7 @@ impl Manifest {
 /// Find ppargo.tole in current directory or any parent directory
 /// this walks up the directory tree until it finds ppargo toml
 pub(super) fn find_manifest() -> Result<PathBuf> {
-    let mut current = env::current_dir()?;
+    let mut current: PathBuf = env::current_dir()?;
 
     loop {
         let manifest_path = current.join("ppargo.toml");
@@ -151,7 +151,7 @@ pub(super) fn find_manifest() -> Result<PathBuf> {
         }
 
         if !current.pop() {
-            bail!("Could not find ppargo.toml in current directory or any parent directory");
+            bail!(format!("Could not find `ppargo.toml` in `{}` or any parent directory", env::current_dir()?.display()));
         }
     }
 }

@@ -1,7 +1,6 @@
 use anyhow::{Context, Ok, Result, bail};
 
 use std::{
-    fmt::format,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -10,8 +9,7 @@ use std::{
 use walkdir::WalkDir;
 
 use crate::{
-    build,
-    core::{Project, manifest::Manifest},
+    core::Project,
     package::manager::PackageManager,
 };
 
@@ -45,13 +43,6 @@ impl<'a> BuildManager<'a> {
     }
 
     pub fn build(&self, release: bool) -> Result<()> {
-        println!(
-            "   Compiling {} v{} ({})",
-            self.project.manifest.package.name,
-            self.project.manifest.package.version,
-            self.project.root.display(),
-        );
-
         // Ensure dependencies are installed (if enabled)
         if let Some(pm) = &self.package_manager {
             //  pm.install_dependencies(&self.project.manifest)?;

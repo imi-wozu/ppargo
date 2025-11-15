@@ -5,13 +5,20 @@ mod build;
 mod cli;
 mod core;
 mod package;
-// mod util;
+mod util;
 
 use cli::{Cli, Commands, commands};
 
-use crate::{build::manager::BuildManager, core::Project};
+use crate::{build::manager::BuildManager, core::Project, util::print_error};
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        print_error(e);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     let mut p: Project = Project::new()?;

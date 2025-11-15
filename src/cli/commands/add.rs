@@ -47,3 +47,12 @@ pub fn execute(p:&Project, package: &str) -> Result<()> {
     Ok(())
 
 }
+
+    // Updating crates.io index
+    //   Adding colored v3.0.0 to dependencies
+    //          Features:
+    //          - no-color
+    // Updating crates.io index
+    // Blocking waiting for file lock on package cache
+    //  Locking 1 package to latest Rust 1.89.0 compatible version
+    //   Adding colored v3.0.0
