@@ -1,18 +1,25 @@
 use anyhow::Result;
-use std::{path::{Path, PathBuf}, fs, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
-use crate::{build::{self, manager::BuildManager}, core::manifest::{self, find_manifest, load_manifest_from_cwd}};
+use crate::{
+    build::{self, manager::BuildManager},
+    core::{
+        Project,
+        manifest::{self},
+    },
+};
 
+pub fn execute(p: &Project, release: bool) -> Result<()> {
+    let bm = BuildManager::new(p)?;
+    super::build::execute(p, &bm, release)?;
 
-pub fn execute(release: bool) -> Result<()> {
-    // First build the project
-    super::build::execute(release)?;
+    println!("     Running `target/debug/{}`", p.manifest.package.name);
 
-    let manifest_path = find_manifest()?;
+    bm.run(release)?;
 
-    let project_root = manifest_path.parent().ok_or_else(|| anyhow::anyhow!("Invalid manifest path"))?;
-
-    let manager = BuildManager::new(project_root)?;
-    manager.run(release)?;
     Ok(())
 }

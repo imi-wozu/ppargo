@@ -5,19 +5,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{build::manager::BuildManager, core::manifest::find_manifest};
+use crate::{build::manager::BuildManager, core::Project};
 
-pub fn execute(release: bool) -> Result<()> {
-    let manifest_path = find_manifest()?;
-    let project_root = manifest_path.parent()
-        .ok_or_else(|| anyhow::anyhow!("Invalid manifest path"))?;
+pub fn execute(p: &Project, bm: &BuildManager, release: bool) -> Result<()> {
+    let start = std::time::Instant::now();
 
-    let manager = BuildManager::new(project_root)?;
-    manager.build(release)?;
+    bm.build(release)?;
+
+    let duration = start.elapsed();
 
     println!(
-        "    Finished {} [optimized] target(s)",
-        if release { "release" } else { "debug" }
+        "    Finished {} [optimized] target(s) in {}.{:02} s ",
+        if release { "release" } else { "debug" },
+        duration.as_secs(),
+        duration.subsec_millis() / 10
     );
 
     Ok(())

@@ -1,0 +1,29 @@
+# Example ppargo.toml configuration file
+
+[package]
+name = "my_cpp_project"
+version = "0.1.0"
+edition = "cpp17"
+
+[toolchain]
+compiler = "clang"
+linker = "lld"
+
+# Optional dependencies (when packages feature is enabled)
+[dependencies]
+# nlohmann_json = "3.11.2"
+# boost = "1.82.0"
+
+[features]
+# Enable/disable package management
+packages = true
+
+# Choose package manager: "vcpkg" or "ppargo", default is "vcpkg"
+package_manager = "vcpkg"
+
+# Required when package_manager = "vcpkg"
+# Specify the path to your vcpkg installation
+vcpkg_root = "C:\\vcpkg"
+# Or for Unix-like systems:
+# vcpkg_root = "/home/user/vcpkg"
+# vcpkg_root = "/usr/local/vcpkg"

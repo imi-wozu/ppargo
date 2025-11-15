@@ -9,31 +9,32 @@ use std::{
 
 use walkdir::WalkDir;
 
-use crate::{build, core::manifest::Manifest, package::manager::PackageManager, core::manifest::find_manifest};
+use crate::{
+    build,
+    core::{Project, manifest::Manifest},
+    package::manager::PackageManager,
+};
 
-pub struct BuildManager {
-    project_root: PathBuf,
-    manifest: Manifest,
+pub struct BuildManager<'a> {
+    pub project: &'a Project,
+
     compiler: PathBuf,
     // linker: Option<PathBuf>,
-    package_manager: Option<PackageManager>,
+    package_manager: Option<PackageManager<'a>>,
 }
 
-impl BuildManager {
-    pub fn new(project_root: &Path) -> Result<Self> {
-       let manifest_path = project_root.join("ppargo.toml");
-        let manifest = Manifest::load(&manifest_path)?;
-        let compiler = Self::find_compiler(&manifest.toolchain.compiler)?;
+impl<'a> BuildManager<'a> {
+    pub fn new(project: &'a Project) -> Result<Self> {
+        let compiler = Self::find_compiler(&project.manifest.toolchain.compiler)?;
 
-        let package_manager = if manifest.features.packages {
-            Some(PackageManager::new(project_root, &manifest)?)
+        let package_manager = if project.manifest.features.packages {
+            Some(PackageManager::new(project)?)
         } else {
             None
         };
 
         Ok(Self {
-            project_root: project_root.to_path_buf(),
-            manifest,
+            project,
             compiler,
             package_manager,
         })
@@ -45,13 +46,15 @@ impl BuildManager {
 
     pub fn build(&self, release: bool) -> Result<()> {
         println!(
-            "   Compiling {} v{}",
-            self.manifest.package.name, self.manifest.package.version
+            "   Compiling {} v{} ({})",
+            self.project.manifest.package.name,
+            self.project.manifest.package.version,
+            self.project.root.display(),
         );
 
         // Ensure dependencies are installed (if enabled)
         if let Some(pm) = &self.package_manager {
-            pm.install_dependencies(&self.manifest)?;
+            //  pm.install_dependencies(&self.project.manifest)?;
         }
 
         let profile = if release { "release" } else { "debug" };
@@ -73,12 +76,12 @@ impl BuildManager {
     }
 
     fn get_build_dir(&self, profile: &str) -> PathBuf {
-        self.project_root.join("target").join(profile)
+        self.project.root.join("target").join(profile)
     }
 
     fn collect_source_files(&self) -> Result<Vec<PathBuf>> {
         let mut sources = Vec::new();
-        let src_dir = self.project_root.join("src");
+        let src_dir = self.project.root.join("src");
 
         if !src_dir.exists() {
             bail!("Source directory 'src/' does not exist");
@@ -129,7 +132,7 @@ impl BuildManager {
     }
 
     fn get_object_file_path(&self, source: &Path, obj_dir: &Path) -> Result<PathBuf> {
-        let relatives = source.strip_prefix(&self.project_root).unwrap_or(source);
+        let relatives = source.strip_prefix(&self.project.root).unwrap_or(source);
         let mut obj_path = obj_dir.join(relatives);
         obj_path.set_extension("o");
 
@@ -158,7 +161,7 @@ impl BuildManager {
         cmd.arg("-c").arg(source).arg("-o").arg(output);
 
         // C++ standard
-        let std_flag = match self.manifest.package.edition.as_str() {
+        let std_flag = match self.project.manifest.package.edition.as_str() {
             "cpp20" => "-std=c++20",
             "cpp23" => "-std=c++23",
             _ => "-std=c++17",
@@ -176,16 +179,16 @@ impl BuildManager {
         cmd.arg("-Wall").arg("-Wextra");
 
         // Include paths
-        let include_dir = self.project_root.join("include");
+        let include_dir = self.project.root.join("include");
         if include_dir.exists() {
             cmd.arg(format!("-I{}", include_dir.display()));
         }
 
         // Package include paths (if enabled)
         if let Some(pm) = &self.package_manager {
-            for path in pm.get_include_path() {
-                cmd.arg(format!("-I{}", path.display()));
-            }
+            // for path in pm.get_include_path() {
+            //     cmd.arg(format!("-I{}", path.display()));
+            // }
         }
 
         let output_result = cmd.output().context("Failed to execute compiler")?;
@@ -220,9 +223,9 @@ impl BuildManager {
 
         // Library paths (if enabled)
         if let Some(pm) = &self.package_manager {
-            for path in pm.get_lib_paths() {
-                cmd.arg(format!("-L{}", path.display()));
-            }
+            // for path in pm.get_lib_paths() {
+            //     cmd.arg(format!("-L{}", path.display()));
+            // }
         }
 
         // Execute linking
@@ -237,7 +240,7 @@ impl BuildManager {
     }
 
     fn get_binary_name(&self) -> String {
-        let name = &self.manifest.package.name;
+        let name = &self.project.manifest.package.name;
         if cfg!(windows) {
             format!("{}.exe", name)
         } else {

@@ -18,6 +18,10 @@ pub fn crate_manifest(name: &str) -> Manifest {
     }
 }
 
+pub fn get_windows_clang_triplet() -> &'static str {
+    r#"x64-windows-clang"#
+}
+
 pub fn get_main_template() -> &'static str {
     r#"#include <iostream>
 
@@ -30,3 +34,4 @@ int main() {
 pub fn get_gitignore_template() -> &'static str {
     r#"/target"#
 }
+

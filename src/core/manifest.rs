@@ -1,6 +1,10 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, fs, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use crate::core::manifest;
 
@@ -11,24 +15,13 @@ pub struct Manifest {
     #[serde(default)]
     pub dependencies: HashMap<String, String>,
 
-    // #[serde(default)]
+    // #[serde(default, rename = "dev-dependencies")]
+    // pub dev_dependencies: HashMap<String, Dependency>,
+    #[serde(default)]
     pub toolchain: Toolchain,
 
     #[serde(default)]
     pub features: Features,
-
-    // #[serde(default, rename = "dev-dependencies")]
-    // pub dev_dependencies: HashMap<String, Dependency>,
-    
-    // #[serde(default)]
-    // pub build: BuildConfig,
-    
-    
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub workspace: Option<Workspace>,
-    
-    // #[serde(default)]
-    // pub profiles: HashMap<String, Profile>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,6 +41,18 @@ pub struct Toolchain {
     pub linker: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Features {
+    #[serde(default = "default_packages_enabled")]
+    pub packages: bool,
+
+    #[serde(default)]
+    pub package_manager: PackageManagerType,
+
+    #[serde(default)]
+    pub vcpkg_root: Option<PathBuf>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PackageManagerType {
@@ -59,18 +64,6 @@ impl Default for PackageManagerType {
     fn default() -> Self {
         PackageManagerType::Vcpkg
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Features {
-    #[serde(default = "default_packages_enabled")]
-    pub packages: bool,
-
-    #[serde(default)]
-    pub package_manager: PackageManagerType,
-
-    #[serde(default)]
-    pub vcpkg_root: Option<PathBuf>,
 }
 
 impl Default for Toolchain {
@@ -94,47 +87,61 @@ impl Default for Features {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BuildConfig {
-//     #[serde(default = "default_source_dir")]
-//     pub source_dir: PathBuf,
-    
-//     #[serde(default = "default_include_dir")]
-//     pub include_dir: PathBuf,
-    
-//     #[serde(default = "default_build_dir")]
-//     pub build_dir: PathBuf,
-    
-//     #[serde(default)]
-//     pub defines: Vec<String>,
-    
-//     #[serde(default)]
-//     pub flags: Vec<String>,
-    
-//     #[serde(default)]
-//     pub link_flags: Vec<String>,
-    
-//     #[serde(default)]
-//     pub include_paths: Vec<PathBuf>,
-    
-//     #[serde(default)]
-//     pub lib_paths: Vec<PathBuf>,
-    
-//     #[serde(default)]
-//     pub libs: Vec<String>,
+    //     #[serde(default = "default_source_dir")]
+    //     pub source_dir: PathBuf,
+
+    //     #[serde(default = "default_include_dir")]
+    //     pub include_dir: PathBuf,
+
+    //     #[serde(default = "default_build_dir")]
+    //     pub build_dir: PathBuf,
+
+    //     #[serde(default)]
+    //     pub defines: Vec<String>,
+
+    //     #[serde(default)]
+    //     pub flags: Vec<String>,
+
+    //     #[serde(default)]
+    //     pub link_flags: Vec<String>,
+
+    //     #[serde(default)]
+    //     pub include_paths: Vec<PathBuf>,
+
+    //     #[serde(default)]
+    //     pub lib_paths: Vec<PathBuf>,
+
+    //     #[serde(default)]
+    //     pub libs: Vec<String>,
 }
 
 impl Manifest {
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self>{
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let content = fs::read_to_string(path).context(format!("Failed to read manifest at {}", path.display()))?;
+        let content = fs::read_to_string(path)
+            .context(format!("Failed to read manifest at {}", path.display()))?;
 
         Ok(toml::from_str(&content).context("Invalid ppargo.toml format")?)
     }
-}
 
+    pub fn save() {
+        //     let toml_str = toml::to_string(&manifest).map_err(|e| format!("Failed to serialize manifest: {}", e))?;
+        //     fs::write("Cppargo.toml", toml_str).map_err(|e| format!("Failed to write Cppargo.toml: {}", e))
+    }
+
+    pub fn add_dependency(&mut self, name: &str, version: &str) {
+        self.dependencies
+            .insert(name.to_string(), version.to_string());
+    }
+
+    pub fn remove_dependency(&mut self, name: &str) -> bool {
+        self.dependencies.remove(name).is_some()
+    }
+}
 
 /// Find ppargo.tole in current directory or any parent directory
 /// this walks up the directory tree until it finds ppargo toml
-pub fn find_manifest() -> Result<PathBuf> {
+pub(super) fn find_manifest() -> Result<PathBuf> {
     let mut current = env::current_dir()?;
 
     loop {
@@ -149,10 +156,8 @@ pub fn find_manifest() -> Result<PathBuf> {
     }
 }
 
-
-
 // cwd = current working directory
-pub fn load_manifest_from_cwd() -> Result<Manifest, String> {
+pub fn load_from_cwd() -> Result<Manifest, String> {
     let manifest_path = Path::new("ppargo.toml");
     if !manifest_path.exists() {
         return Err(
@@ -163,12 +168,6 @@ pub fn load_manifest_from_cwd() -> Result<Manifest, String> {
         .map_err(|e| format!("Failed to read ppargo.toml: {}", e))?;
     toml::from_str(&content).map_err(|e| format!("Invalid ppargo.toml format: {}", e))
 }
-
-// /// Cppargo.toml 저장 (덮어쓰기)
-// fn save_manifest_to_cwd(manifest: &Manifest) -> Result<(), String> {
-//     let toml_str = toml::to_string(&manifest).map_err(|e| format!("Failed to serialize manifest: {}", e))?;
-//     fs::write("Cppargo.toml", toml_str).map_err(|e| format!("Failed to write Cppargo.toml: {}", e))
-// }
 
 fn default_edition() -> String {
     "cpp17".to_string()
