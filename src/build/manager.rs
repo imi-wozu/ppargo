@@ -8,10 +8,7 @@ use std::{
 
 use walkdir::WalkDir;
 
-use crate::{
-    core::Project,
-    package::manager::PackageManager,
-};
+use crate::{core::project::Project, package::manager::PackageManager};
 
 pub struct BuildManager<'a> {
     pub project: &'a Project,
@@ -45,17 +42,21 @@ impl<'a> BuildManager<'a> {
     pub fn build(&self, release: bool) -> Result<()> {
         // Ensure dependencies are installed (if enabled)
         if let Some(pm) = &self.package_manager {
-            //  pm.install_dependencies(&self.project.manifest)?;
+            //pm.install_dependencies(&self.project.manifest)?;
         }
 
         let profile = if release { "release" } else { "debug" };
-        let build_dir = self.get_build_dir(profile);
+        let build_dir = self.project.get_build_dir(profile);
 
         // Create build directory
         fs::create_dir_all(&build_dir).context("Failed to create build directory")?;
 
         // Collect source files
         let source_files = self.collect_source_files()?;
+
+        if source_files.is_empty() {
+            bail!("No source files found in src/");
+        }
 
         // Compile sources
         let object_files = self.compile_sources(&source_files, &build_dir, release)?;
@@ -64,10 +65,6 @@ impl<'a> BuildManager<'a> {
         self.link_executable(&object_files, &build_dir, release)?;
 
         Ok(())
-    }
-
-    fn get_build_dir(&self, profile: &str) -> PathBuf {
-        self.project.root.join("target").join(profile)
     }
 
     fn collect_source_files(&self) -> Result<Vec<PathBuf>> {
@@ -193,7 +190,7 @@ impl<'a> BuildManager<'a> {
     }
 
     fn link_executable(&self, objects: &[PathBuf], build_dir: &Path, release: bool) -> Result<()> {
-        let binary_name = self.get_binary_name();
+        let binary_name = self.project.get_binary_name();
         let output = build_dir.join(&binary_name);
 
         let mut cmd = Command::new(&self.compiler);
@@ -230,32 +227,63 @@ impl<'a> BuildManager<'a> {
         Ok(())
     }
 
-    fn get_binary_name(&self) -> String {
-        let name = &self.project.manifest.package.name;
-        if cfg!(windows) {
-            format!("{}.exe", name)
-        } else {
-            name.clone()
-        }
-    }
 
-    pub fn run(&self, release: bool) -> Result<()> {
+
+    fn generate_compile_commands(&self, sources: &[PathBuf], build_dir: &Path, release: bool) -> Result<()> {
+        let mut commands = Vec::new();
         let profile = if release { "release" } else { "debug" };
-        let build_dir = self.get_build_dir(profile);
-        let binary_name = self.get_binary_name();
-        let executable = build_dir.join(&binary_name);
 
-        if !executable.exists() {
-            bail!("Executable not found. Please build first.");
+        for source in sources {
+            let mut cmd = Vec::new();
+            cmd.push(self.compiler.to_string_lossy().to_string());
+            cmd.push("-c".to_string());
+            cmd.push(source.to_string_lossy().to_string());
+
+            // C++ standard
+            let std_flag = match self.project.manifest.package.edition.as_str() {
+                "cpp20" => "-std=c++20",
+                "cpp23" => "-std=c++23",
+                _ => "-std=c++17",
+            };
+            cmd.push(std_flag.to_string());
+
+            // Optimization
+            if release {
+                cmd.push("-O3".to_string());
+            } else {
+                cmd.push("-O0".to_string());
+                cmd.push("-g".to_string());
+            }
+
+            // Warnings
+            cmd.push("-Wall".to_string());
+            cmd.push("-Wextra".to_string());
+
+            // Include paths
+            let include_dir = self.project.root.join("include");
+            if include_dir.exists() {
+                cmd.push(format!("-I{}", include_dir.display()));
+            }
+
+            // Package include paths (if enabled)
+            if let Some(pm) = &self.package_manager {
+                // for path in pm.get_include_path() {
+                //     cmd.push(format!("-I{}", path.display()));
+                // }
+            }
+
+            commands.push(serde_json::json!({
+                "directory": build_dir.to_string_lossy(),
+                "command": cmd.join(" "),
+                "file": source.to_string_lossy(),
+            }));
         }
 
-        let status = Command::new(&executable)
-            .status()
-            .context("Failed to run executable")?;
-
-        if !status.success() {
-            bail!("Process exited with error");
-        }
+        let compile_commands_path = self.project.root.join("compile_commands.json");
+        let file = fs::File::create(&compile_commands_path)
+            .context("Failed to create compile_commands.json")?;
+        serde_json::to_writer_pretty(file, &commands)
+            .context("Failed to write compile_commands.json")?;
 
         Ok(())
     }

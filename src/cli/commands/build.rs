@@ -1,9 +1,10 @@
 use anyhow::Result;
 use colored::*;
 
-use crate::{build::manager::BuildManager, core::Project};
+use crate::{build::manager::BuildManager, core::project::Project};
 
-pub fn execute(p: &Project, bm: &BuildManager, release: bool) -> Result<()> {
+pub fn execute(p: &Project, release: bool) -> Result<()> {
+    let bm = BuildManager::new(p)?;
     println!(
         "   {} {} v{} ({})",
         "Compiling".green().bold(),

@@ -11,9 +11,9 @@ use crate::core::{Project, manifest::PackageManagerType};
 
 pub struct PackageManager<'a> {
     pub project: &'a Project,
-    // pub manager_type: PackageManagerType,
-    // pub vcpkg_root: Option<PathBuf>,
-    // pub triplet: Option<String>,
+    pub manager_type: PackageManagerType,
+    pub vcpkg_root: Option<PathBuf>,
+    pub triplet: Option<String>,
 }
 
 // #[derive(Debug, Serialize, Deserialize)]
@@ -42,73 +42,76 @@ pub struct PackageManager<'a> {
 
 impl<'a> PackageManager<'a> {
     pub fn new(project: &'a Project) -> Result<Self> {
-        // let (manager_type, vcpkg_root, triplet) = match manifest.features.package_manager {
-        //     PackageManagerType::Vcpkg => {
-        //         let root = manifest.features.vcpkg_root.clone().ok_or_else(|| {
-        //             anyhow::anyhow!("vcpkg_root must be specified in features when using vcpkg")
-        //         })?;
+        let (manager_type, vcpkg_root, triplet) = match project.manifest.features.package_manager {
+            PackageManagerType::Vcpkg => {
+                let root = project
+                    .manifest
+                    .features
+                    .vcpkg_root
+                    .clone()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("vcpkg_root must be specified in features when using vcpkg")
+                    })?;
 
-        //         // verify vcpkg_root exists
-        //         if !root.exists() {
-        //             anyhow::bail!("vcpkg_root '{}' does not exist", root.display());
-        //         }
+                // verify vcpkg_root exists
+                if !root.exists() {
+                    anyhow::bail!("vcpkg_root '{}' does not exist", root.display());
+                }
 
-        //         let trip = Self::detect_triplet();
-        //         (PackageManagerType::Vcpkg, Some(root), Some(trip))
-        //     }
-        //     PackageManagerType::Ppargo => (PackageManagerType::Ppargo, None, None),
-        // };
+                let trip = Self::detect_triplet();
+                (PackageManagerType::Vcpkg, Some(root), Some(trip))
+            }
+            PackageManagerType::Ppargo => (PackageManagerType::Ppargo, None, None),
+        };
 
-        // Ok(Self {
-        //     manager_type,
-        //     vcpkg_root,
-        //     triplet,
-        //     project_root: project_root.to_path_buf(),
-        // })
-
-        Ok(Self { project })
+        Ok(Self {
+            project,
+            manager_type,
+            vcpkg_root,
+            triplet,
+        })
     }
 
-    //     fn detect_triplet() -> String {
-    //         let os = env::consts::OS;
-    //         let arch = env::consts::ARCH;
+    fn detect_triplet() -> String {
+        let os = env::consts::OS;
+        let arch = env::consts::ARCH;
 
-    //         match (os, arch) {
-    //             ("linux", "x86_64") => "x64-linux",
-    //             ("linux", "aarch64") => "arm64-linux",
-    //             ("macos", "x86_64") => "x64-osx",
-    //             ("macos", "aarch64") => "arm64-osx",
-    //             ("windows", "x86_64") => "x64-windows",
-    //             ("windows", "aarch64") => "arm64-windows",
-    //             _ => {
-    //                 eprintln!(
-    //                     "Warning: Unknown platform {}-{}, defaulting to x64-linux",
-    //                     os, arch
-    //                 );
-    //                 "x64-linux"
-    //             }
-    //         }
-    //         .to_string()
-    //     }
+        match (os, arch) {
+            ("linux", "x86_64") => "x64-linux",
+            ("linux", "aarch64") => "arm64-linux",
+            ("macos", "x86_64") => "x64-osx",
+            ("macos", "aarch64") => "arm64-osx",
+            ("windows", "x86_64") => "x64-windows",
+            ("windows", "aarch64") => "arm64-windows",
+            _ => {
+                eprintln!(
+                    "Warning: Unknown platform {}-{}, defaulting to x64-linux",
+                    os, arch
+                );
+                "x64-linux"
+            }
+        }
+        .to_string()
+    }
 
-    //     fn vcpkg_exe(&self) -> Result<PathBuf> {
-    //         let vcpkg_root = self
-    //             .vcpkg_root
-    //             .as_ref()
-    //             .ok_or_else(|| anyhow::anyhow!("vcpkg_root not set"))?;
+        fn vcpkg_exe(&self) -> Result<PathBuf> {
+            let vcpkg_root = self
+                .vcpkg_root
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("vcpkg_root not set"))?;
 
-    //         let exe = if cfg!(windows) {
-    //             vcpkg_root.join("vcpkg.exe")
-    //         } else {
-    //             vcpkg_root.join("vcpkg")
-    //         };
+            let exe = if cfg!(windows) {
+                vcpkg_root.join("vcpkg.exe")
+            } else {
+                vcpkg_root.join("vcpkg")
+            };
 
-    //         if !exe.exists() {
-    //             bail!("vcpkg executable not found at {}", exe.display());
-    //         }
+            if !exe.exists() {
+                bail!("vcpkg executable not found at {}", exe.display());
+            }
 
-    //         Ok(exe)
-    //     }
+            Ok(exe)
+        }
 
     //     pub fn install_dependencies(&self, manifest: &Manifest) -> Result<()> {
     //         if !manifest.features.packages {
@@ -266,69 +269,69 @@ impl<'a> PackageManager<'a> {
     //         }
     //     }
 
-    //     pub fn search_package(&self, package: &str) -> Result<Vec<PackageInfo>> {
-    //         match self.manager_type {
-    //             PackageManagerType::Vcpkg => {
-    //                 let vcpkg_exe = self.vcpkg_exe()?;
-    //                 let output = Command::new(&vcpkg_exe)
-    //                     .args(&["search", package])
-    //                     .output()
-    //                     .context("Failed to search packages")?;
+        pub fn search_package(&self, package: &str) -> Result<Vec<PackageInfo>> {
+            match self.manager_type {
+                PackageManagerType::Vcpkg => {
+                    let vcpkg_exe = self.vcpkg_exe()?;
+                    let output = Command::new(&vcpkg_exe)
+                        .args(&["search", package])
+                        .output()
+                        .context("Failed to search packages")?;
 
-    //                 if !output.status.success() {
-    //                     bail!("Failed to search for package '{}'", package);
-    //                 }
+                    if !output.status.success() {
+                        bail!("Failed to search for package '{}'", package);
+                    }
 
-    //                 let output_str = String::from_utf8_lossy(&output.stdout);
-    //                 Ok(self.parse_package_list(&output_str))
-    //             }
-    //             PackageManagerType::Ppargo => {
-    //                 // Ppargo package search not implemented
-    //                 Ok(vec![])
-    //             }
-    //         }
-    //     }
+                    let output_str = String::from_utf8_lossy(&output.stdout);
+                    Ok(self.parse_package_list(&output_str))
+                }
+                PackageManagerType::Ppargo => {
+                    // Ppargo package search not implemented
+                    Ok(vec![])
+                }
+            }
+        }
 
-    //     fn parse_package_list(&self, output: &str) -> Vec<PackageInfo> {
-    //         let mut packages = Vec::new();
+        fn parse_package_list(&self, output: &str) -> Vec<PackageInfo> {
+            let mut packages = Vec::new();
 
-    //         for line in output.lines() {
-    //             if line.trim().is_empty() {
-    //                 continue;
-    //             }
+            for line in output.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
 
-    //             // Parse format: "package:triplet  version  description"
-    //             let parts: Vec<&str> = line.splitn(3, ' ').collect();
-    //             if parts.len() >= 2 {
-    //                 let name_triplet = parts[0];
-    //                 let version = parts[1].trim();
-    //                 let description = parts.get(2).map(|s| s.trim().to_string());
+                // Parse format: "package:triplet  version  description"
+                let parts: Vec<&str> = line.splitn(3, ' ').collect();
+                if parts.len() >= 2 {
+                    let name_triplet = parts[0];
+                    let version = parts[1].trim();
+                    let description = parts.get(2).map(|s| s.trim().to_string());
 
-    //                 let name = name_triplet
-    //                     .split(':')
-    //                     .next()
-    //                     .unwrap_or(name_triplet)
-    //                     .to_string();
+                    let name = name_triplet
+                        .split(':')
+                        .next()
+                        .unwrap_or(name_triplet)
+                        .to_string();
 
-    //                 packages.push(PackageInfo {
-    //                     name,
-    //                     version: version.to_string(),
-    //                     description,
-    //                 });
-    //             }
-    //         }
+                    packages.push(PackageInfo {
+                        name,
+                        version: version.to_string(),
+                        description,
+                    });
+                }
+            }
 
-    //         packages
-    //     }
+            packages
+        }
 
-    //         pub fn get_install_root(&self) -> PathBuf {
-    //         self.project_root.join("vcpkg_installed")
-    //     }
+            pub fn get_install_root(&self) -> PathBuf {
+            self.project.root.join("vcpkg_installed")
+        }
 }
 
-// #[derive(Debug)]
-// pub struct PackageInfo {
-//     pub name: String,
-//     pub version: String,
-//     pub description: Option<String>,
-// }
+#[derive(Debug)]
+pub struct PackageInfo {
+    pub name: String,
+    pub version: String,
+    pub description: Option<String>,
+}

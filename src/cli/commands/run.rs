@@ -1,23 +1,10 @@
 use anyhow::Result;
 use colored::*;
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
-
-use crate::{
-    build::{self, manager::BuildManager},
-    core::{
-        Project,
-        manifest::{self},
-    },
-};
+use crate::core::Project;
 
 pub fn execute(p: &Project, release: bool) -> Result<()> {
-    let bm = BuildManager::new(p)?;
-    super::build::execute(p, &bm, release)?;
+    super::build::execute(p, release)?;
 
     println!(
         "     {} `target/debug/{}`",
@@ -25,7 +12,7 @@ pub fn execute(p: &Project, release: bool) -> Result<()> {
         p.manifest.package.name
     );
 
-    bm.run(release)?;
+    p.run(release)?;
 
     Ok(())
 }

@@ -9,7 +9,7 @@ mod util;
 
 use cli::{Cli, Commands, commands};
 
-use crate::{build::manager::BuildManager, core::Project, util::print_error};
+use crate::{core::Project, util::print_error};
 
 fn main() {
     if let Err(e) = run() {
@@ -34,7 +34,7 @@ fn run() -> Result<()> {
             commands::add::execute(&p, &package)?;
         }
         Commands::Build { release } => {
-            commands::build::execute(&p, &BuildManager::new(&p)?, release)?;
+            commands::build::execute(&p, release)?;
         }
         Commands::Run => {
             commands::run::execute(&p, false)?;
