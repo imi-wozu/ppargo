@@ -9,19 +9,17 @@ mod util;
 
 use cli::{Cli, Commands, commands};
 
-use crate::{core::Project, util::print_error};
-
 fn main() {
     if let Err(e) = run() {
-        print_error(e);
+        util::print_error(e);
         std::process::exit(1);
     }
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    core::init()?;
 
-    let mut p: Project = Project::new()?;
+    let cli = Cli::parse();
 
     match cli.command {
         Commands::New { name } => {
@@ -31,13 +29,13 @@ fn run() -> Result<()> {
             commands::init::execute()?;
         }
         Commands::Add { package } => {
-            commands::add::execute(&p, &package)?;
+            commands::add::execute(&package)?;
         }
         Commands::Build { release } => {
-            commands::build::execute(&p, release)?;
+            commands::build::execute(release)?;
         }
         Commands::Run => {
-            commands::run::execute(&p, false)?;
+            commands::run::execute(false)?;
         }
         Commands::Version => {
             commands::version::execute()?;

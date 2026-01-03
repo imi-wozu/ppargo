@@ -1,18 +1,16 @@
 use anyhow::Result;
 use colored::*;
 
-use crate::core::Project;
-
-pub fn execute(p: &Project, release: bool) -> Result<()> {
-    super::build::execute(p, release)?;
+pub fn execute( release: bool) -> Result<()> {
+    super::build::execute( release)?;
 
     println!(
         "     {} `target/debug/{}`",
         "Running".green().bold(),
-        p.manifest.package.name
+        crate::core::get_manifest().package.name
     );
 
-    p.run(release)?;
+    crate::core::run(release)?;
 
     Ok(())
 }

@@ -1,16 +1,16 @@
 use anyhow::Result;
 use colored::*;
 
-use crate::{build::manager::BuildManager, core::project::Project};
+use crate::{build::manager::BuildManager, };
 
-pub fn execute(p: &Project, release: bool) -> Result<()> {
-    let bm = BuildManager::new(p)?;
+pub fn execute( release: bool) -> Result<()> {
+    let bm = BuildManager::new()?;
     println!(
         "   {} {} v{} ({})",
         "Compiling".green().bold(),
-        p.manifest.package.name,
-        p.manifest.package.version,
-        p.root.display(),
+        crate::core::get_manifest().package.name,
+        crate::core::get_manifest().package.version,
+        crate::core::get_root().display(),
     );
 
     let start = std::time::Instant::now();

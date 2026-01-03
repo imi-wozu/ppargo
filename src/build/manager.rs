@@ -8,28 +8,26 @@ use std::{
 
 use walkdir::WalkDir;
 
-use crate::{core::project::Project, package::manager::PackageManager};
+use crate::{ package::manager::PackageManager};
 
-pub struct BuildManager<'a> {
-    pub project: &'a Project,
+pub struct BuildManager {
 
     compiler: PathBuf,
     // linker: Option<PathBuf>,
-    package_manager: Option<PackageManager<'a>>,
+    package_manager: Option<PackageManager>,
 }
 
-impl<'a> BuildManager<'a> {
-    pub fn new(project: &'a Project) -> Result<Self> {
-        let compiler = Self::find_compiler(&project.manifest.toolchain.compiler)?;
+impl BuildManager {
+    pub fn new() -> Result<Self> {
+        let compiler = Self::find_compiler(&crate::core::get_manifest().toolchain.compiler)?;
 
-        let package_manager = if project.manifest.features.packages {
-            Some(PackageManager::new(project)?)
+        let package_manager = if crate::core::get_manifest().features.packages {
+            Some(PackageManager::new()?)
         } else {
             None
         };
 
         Ok(Self {
-            project,
             compiler,
             package_manager,
         })
@@ -42,11 +40,11 @@ impl<'a> BuildManager<'a> {
     pub fn build(&self, release: bool) -> Result<()> {
         // Ensure dependencies are installed (if enabled)
         if let Some(pm) = &self.package_manager {
-            //pm.install_dependencies(&self.project.manifest)?;
+          //  pm.install_dependencies()?;
         }
 
         let profile = if release { "release" } else { "debug" };
-        let build_dir = self.project.get_build_dir(profile);
+        let build_dir = crate::core::get_build_dir(profile);
 
         // Create build directory
         fs::create_dir_all(&build_dir).context("Failed to create build directory")?;
@@ -68,8 +66,8 @@ impl<'a> BuildManager<'a> {
     }
 
     fn collect_source_files(&self) -> Result<Vec<PathBuf>> {
-        let mut sources = Vec::new();
-        let src_dir = self.project.root.join("src");
+        let mut sources: Vec<PathBuf> = Vec::new();
+        let src_dir = crate::core::get_root().join("src");
 
         if !src_dir.exists() {
             bail!("Source directory 'src/' does not exist");
@@ -120,7 +118,7 @@ impl<'a> BuildManager<'a> {
     }
 
     fn get_object_file_path(&self, source: &Path, obj_dir: &Path) -> Result<PathBuf> {
-        let relatives = source.strip_prefix(&self.project.root).unwrap_or(source);
+        let relatives = source.strip_prefix(&crate::core::get_root()).unwrap_or(source);
         let mut obj_path = obj_dir.join(relatives);
         obj_path.set_extension("o");
 
@@ -149,7 +147,7 @@ impl<'a> BuildManager<'a> {
         cmd.arg("-c").arg(source).arg("-o").arg(output);
 
         // C++ standard
-        let std_flag = match self.project.manifest.package.edition.as_str() {
+        let std_flag = match crate::core::get_manifest().package.edition.as_str() {
             "cpp20" => "-std=c++20",
             "cpp23" => "-std=c++23",
             _ => "-std=c++17",
@@ -167,7 +165,7 @@ impl<'a> BuildManager<'a> {
         cmd.arg("-Wall").arg("-Wextra");
 
         // Include paths
-        let include_dir = self.project.root.join("include");
+        let include_dir = crate::core::get_root().join("include");
         if include_dir.exists() {
             cmd.arg(format!("-I{}", include_dir.display()));
         }
@@ -190,7 +188,7 @@ impl<'a> BuildManager<'a> {
     }
 
     fn link_executable(&self, objects: &[PathBuf], build_dir: &Path, release: bool) -> Result<()> {
-        let binary_name = self.project.get_binary_name();
+        let binary_name = crate::core::get_binary_name();
         let output = build_dir.join(&binary_name);
 
         let mut cmd = Command::new(&self.compiler);
@@ -240,7 +238,7 @@ impl<'a> BuildManager<'a> {
             cmd.push(source.to_string_lossy().to_string());
 
             // C++ standard
-            let std_flag = match self.project.manifest.package.edition.as_str() {
+            let std_flag = match crate::core::get_manifest().package.edition.as_str() {
                 "cpp20" => "-std=c++20",
                 "cpp23" => "-std=c++23",
                 _ => "-std=c++17",
@@ -260,7 +258,7 @@ impl<'a> BuildManager<'a> {
             cmd.push("-Wextra".to_string());
 
             // Include paths
-            let include_dir = self.project.root.join("include");
+            let include_dir = crate::core::get_root().join("include");
             if include_dir.exists() {
                 cmd.push(format!("-I{}", include_dir.display()));
             }
@@ -279,7 +277,7 @@ impl<'a> BuildManager<'a> {
             }));
         }
 
-        let compile_commands_path = self.project.root.join("compile_commands.json");
+        let compile_commands_path = crate::core::get_root().join("compile_commands.json");
         let file = fs::File::create(&compile_commands_path)
             .context("Failed to create compile_commands.json")?;
         serde_json::to_writer_pretty(file, &commands)
