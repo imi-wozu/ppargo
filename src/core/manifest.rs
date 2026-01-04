@@ -6,10 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{core::manifest, util::print_error};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
+    
     pub package: Package,
 
     #[serde(default)]
@@ -24,7 +24,7 @@ pub struct Manifest {
     pub features: Features,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     pub name: String,
     pub version: String,
@@ -33,7 +33,7 @@ pub struct Package {
     pub edition: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Toolchain {
     #[serde(default = "default_compiler")]
     pub compiler: String,
@@ -41,7 +41,7 @@ pub struct Toolchain {
     pub linker: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Features {
     #[serde(default = "default_packages_enabled")]
     pub packages: bool,

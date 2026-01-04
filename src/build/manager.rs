@@ -8,10 +8,9 @@ use std::{
 
 use walkdir::WalkDir;
 
-use crate::{ package::manager::PackageManager};
+use crate::package::manager::PackageManager;
 
 pub struct BuildManager {
-
     compiler: PathBuf,
     // linker: Option<PathBuf>,
     package_manager: Option<PackageManager>,
@@ -40,7 +39,7 @@ impl BuildManager {
     pub fn build(&self, release: bool) -> Result<()> {
         // Ensure dependencies are installed (if enabled)
         if let Some(pm) = &self.package_manager {
-          //  pm.install_dependencies()?;
+            //  pm.install_dependencies()?;
         }
 
         let profile = if release { "release" } else { "debug" };
@@ -118,7 +117,9 @@ impl BuildManager {
     }
 
     fn get_object_file_path(&self, source: &Path, obj_dir: &Path) -> Result<PathBuf> {
-        let relatives = source.strip_prefix(&crate::core::get_root()).unwrap_or(source);
+        let relatives = source
+            .strip_prefix(&crate::core::get_root())
+            .unwrap_or(source);
         let mut obj_path = obj_dir.join(relatives);
         obj_path.set_extension("o");
 
@@ -165,7 +166,10 @@ impl BuildManager {
         cmd.arg("-Wall").arg("-Wextra");
 
         // Include paths
-        let include_dir = crate::core::get_root().join("include");
+        let include_dir = crate::core::get_root()
+            .join("packages")
+            .join(crate::util::detect_triplet())
+            .join("include");
         if include_dir.exists() {
             cmd.arg(format!("-I{}", include_dir.display()));
         }
@@ -225,9 +229,12 @@ impl BuildManager {
         Ok(())
     }
 
-
-
-    fn generate_compile_commands(&self, sources: &[PathBuf], build_dir: &Path, release: bool) -> Result<()> {
+    fn generate_compile_commands(
+        &self,
+        sources: &[PathBuf],
+        build_dir: &Path,
+        release: bool,
+    ) -> Result<()> {
         let mut commands = Vec::new();
         let profile = if release { "release" } else { "debug" };
 
