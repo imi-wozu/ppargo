@@ -1,4 +1,4 @@
-use crate::{core::get_root, package::manager::{self, PackageManager}};
+use crate::{core::get_root};
 use anyhow::Result;
 use colored::Colorize;
 use std::fs;
@@ -6,7 +6,7 @@ use std::fs;
 pub fn execute(package: &str) -> Result<()> {
     println!("      {} {} to dependencies","Adding".green().bold(), package);
 
-    manager::add(package)?;
+    crate::package::add(package)?;
 
     println!("       {} {} to dependencies", "Added".green().bold(), package);
 

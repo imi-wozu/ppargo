@@ -1,10 +1,7 @@
 use anyhow::Result;
 use colored::*;
 
-use crate::{build::manager::BuildManager, };
-
 pub fn execute( release: bool) -> Result<()> {
-    let bm = BuildManager::new()?;
     println!(
         "   {} {} v{} ({})",
         "Compiling".green().bold(),
@@ -15,7 +12,7 @@ pub fn execute( release: bool) -> Result<()> {
 
     let start = std::time::Instant::now();
 
-    bm.build(release)?;
+    crate::build::build(release)?;
 
     let duration = start.elapsed();
 

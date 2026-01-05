@@ -2,15 +2,15 @@ use anyhow::{Context, Ok, Result, bail};
 
 use std::{path::PathBuf, process::Command};
 
-use super::manager::PackageInfo;
+use super::PackageInfo;
 
 #[derive(Debug)]
-pub(super) struct VcpkgManifest {
+pub struct VcpkgManifest {
     pub exe_root: PathBuf,
 }
 
 fn vcpkg_exe() -> Result<PathBuf> {
-    let root = super::manager::get_vcpkg_manifest().exe_root.clone();
+    let root = crate::core::get_vcpkg_manifest().exe_root.clone();
 
     let exe = if cfg!(windows) {
         root.join("vcpkg.exe")
@@ -25,7 +25,7 @@ fn vcpkg_exe() -> Result<PathBuf> {
     Ok(exe)
 }
 
-pub(super) fn search_package(package: &str) -> anyhow::Result<Vec<super::manager::PackageInfo>> {
+pub(super) fn search_package(package: &str) -> anyhow::Result<Vec<super::PackageInfo>> {
     let vcpkg_exe = vcpkg_exe()?;
 
     let output = Command::new(&vcpkg_exe)
@@ -45,7 +45,7 @@ pub(super) fn install_dependencies(manifest: &crate::core::manifest::Manifest) -
     let vcpkg_manifest_path = crate::core::get_root().join("vcpkg.json");
     if !vcpkg_manifest_path.exists() {
         let default_vcpkg_json = serde_json::json!({
-            "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+            "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
             "dependencies": []
         });
 
