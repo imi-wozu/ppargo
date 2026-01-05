@@ -1,5 +1,4 @@
 pub mod manifest;
-//pub mod project;
 pub mod templates;
 
 use anyhow::{Context, Result, bail};
@@ -20,7 +19,11 @@ pub fn init() -> Result<()> {
 
     match get_package_manager_type() {
         PackageManagerType::Vcpkg => {
-            crate::package::VCPKG_MANIFEST.set(vcpkg).unwrap();
+            let exe_root = get_manifest().features.vcpkg_root.clone().ok_or_else(|| {
+                anyhow::anyhow!("vcpkg_root must be specified in features when using vcpkg")
+            })?;
+            let vcpkg = crate::package::vcpkg::VcpkgManifest { exe_root };
+            VCPKG_MANIFEST.set(vcpkg).unwrap();
         }
         PackageManagerType::Ppargo => {
             // No additional initialization needed for Ppargo
@@ -48,8 +51,7 @@ pub fn get_vcpkg_manifest() -> &'static crate::package::vcpkg::VcpkgManifest {
 }
 
 pub fn run(release: bool) -> anyhow::Result<()> {
-    let profile = if release { "release" } else { "debug" };
-    let build_dir = get_build_dir(profile);
+    let build_dir = get_build_dir(release);
     let binary_name = get_binary_name();
     let executable = build_dir.join(&binary_name);
 
@@ -78,6 +80,7 @@ pub fn get_binary_name() -> String {
     }
 }
 
-pub fn get_build_dir(profile: &str) -> PathBuf {
-    get_root().join("target").join(profile)
+pub fn get_build_dir(release: bool) -> PathBuf {
+    get_root().join("target").join(if release { "release" } else { "debug" })
 }
+

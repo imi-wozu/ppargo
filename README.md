@@ -2,7 +2,14 @@
  
 Rust cargo-like C++ build & package manager 
 
+### Requirements 
+clang 
+https://github.com/llvm/llvm-project/releases
+
+vcpkg
+
 ### Instalation
+
 
 ### Usage 
 argo + command
@@ -19,4 +26,5 @@ argo + command
 
 
 ### Notice 
-This project has only been tested in a Windows environment
+This project has only been tested in a Windows environment.
+Some packages have names that differ from the actual .lib files. When adding, specify the .lib file name directly instead of using the add command.

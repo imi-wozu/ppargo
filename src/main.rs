@@ -16,8 +16,6 @@ fn main() {
     }
 }
 
-// Todo: delete all manager
-
 fn run() -> Result<()> {
     core::init()?;
 

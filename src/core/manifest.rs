@@ -6,14 +6,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
-    
     pub package: Package,
 
     #[serde(default)]
-    pub dependencies: HashMap<String, String>,
+    pub dependencies: HashMap<String, Dependency>,
 
     // #[serde(default, rename = "dev-dependencies")]
     // pub dev_dependencies: HashMap<String, Dependency>,
@@ -22,6 +20,30 @@ pub struct Manifest {
 
     #[serde(default)]
     pub features: Features,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Dependency {
+    Simple(String),
+    Detailed(DependencyDetail),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencyDetail {
+    pub version: String,
+
+    #[serde(default)]
+    pub libs: Vec<String>,
+}
+
+impl Dependency {
+    pub fn version(&self) -> &str {
+        match self {
+            Dependency::Simple(v) => v,
+            Dependency::Detailed(d) => &d.version,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,9 +153,18 @@ impl Manifest {
 
     pub fn add_dependency(&mut self, name: &str, version: &str) {
         self.dependencies
-            .insert(name.to_string(), version.to_string());
+            .insert(name.to_string(), Dependency::Simple(version.to_string()));
     }
 
+    pub fn add_detailed_dependency(&mut self, name: &str, version: &str, libs: Vec<String>) {
+        self.dependencies.insert(
+            name.to_string(),
+            Dependency::Detailed(DependencyDetail {
+                version: version.to_string(),
+                libs,
+            }),
+        );
+    }
     pub fn remove_dependency(&mut self, name: &str) -> bool {
         self.dependencies.remove(name).is_some()
     }
@@ -151,7 +182,10 @@ pub(super) fn find_manifest() -> Result<PathBuf> {
         }
 
         if !current.pop() {
-            bail!(format!("Could not find `ppargo.toml` in `{}` or any parent directory", env::current_dir()?.display()));
+            bail!(format!(
+                "Could not find `ppargo.toml` in `{}` or any parent directory",
+                env::current_dir()?.display()
+            ));
         }
     }
 }

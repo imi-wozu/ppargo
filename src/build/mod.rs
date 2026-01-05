@@ -1,40 +1,92 @@
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
+use std::fmt::format;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use walkdir::WalkDir;
 
-use crate::core::get_manifest;
+use crate::core::manifest::{Dependency, Manifest};
+use crate::core::{get_build_dir, get_manifest, get_root, manifest};
 
 pub mod fingerprint;
 
-fn get_compiler_path() -> Result<PathBuf> {
-    which::which(&get_manifest().toolchain.compiler).context(format!("Compiler '{}' not found in PATH", get_manifest().toolchain.compiler))
+struct BuildContext {
+    compiler: PathBuf,
+    flags: Vec<String>,
+    include_paths: Vec<PathBuf>,
+    lib_paths: Vec<PathBuf>,
+    release: bool,
 }
 
 pub fn build(release: bool) -> Result<()> {
-    if (get_manifest().features.packages) {
-       // crate::package::install_dependencies(&get_manifest())?;
-    }
-
-    let profile = if release { "release" } else { "debug" };
-    let build_dir = crate::core::get_build_dir(profile);
-
-    // Create build directory
+    // init
+    let manifest = get_manifest();
+    let build_dir = get_build_dir(release);
     fs::create_dir_all(&build_dir).context("Failed to create build directory")?;
 
-    // Collect source files
-    let source_files = collect_source_files()?;
+    //init vcpkg roots
+    let vcpkg_installed = get_root()
+        .join("packages")
+        .join(crate::util::detect_triplet());
 
+    let mut base_flags: Vec<String> = Vec::new();
+
+    // C++ standard
+    base_flags.push(
+        match manifest.package.edition.as_str() {
+            "cpp20" => "-std=c++20",
+            "cpp23" => "-std=c++23",
+            "cpp26" => "-std=c++26",
+            _ => "-std=c++17",
+        }
+        .to_string(),
+    );
+
+    // Optimization
+    if release {
+        base_flags.push("-O3".to_string());
+    } else {
+        base_flags.push("-O0".to_string());
+        base_flags.push("-g".to_string());
+    }
+
+    // Warnings
+    base_flags.push("-Wall".to_string());
+    base_flags.push("-Wextra".to_string());
+
+    // collect sources
+    let source_files = collect_source_files()?;
     if source_files.is_empty() {
         bail!("No source files found in src/");
     }
 
+    // if (get_manifest().features.packages) {
+    //     // crate::package::install_dependencies(&get_manifest())?;
+    // }
+
+    // make build config
+    let ctx = BuildContext {
+        compiler: which::which(&manifest.toolchain.compiler).context(format!(
+            "Compiler '{}' not found in PATH",
+            get_manifest().toolchain.compiler
+        ))?,
+        flags: base_flags,
+        include_paths: vec![
+            //crate::core::get_root().join("include"), // project include
+            vcpkg_installed.join("include"), // vcpkg include
+        ],
+        lib_paths: vec![vcpkg_installed.join("lib")], // vcpkg lib
+        release,
+    };
+
     // Compile sources
-    let object_files = compile_sources(&source_files, &build_dir, release)?;
+    let object_files = compile_sources_parallel(&ctx, &source_files, &build_dir)?;
 
     // Link
-    link_executable(&object_files, &build_dir, release)?;
+    link_executable(&ctx, &object_files, &build_dir)?;
+
+    copy_dlls(&manifest, &build_dir)?;
 
     Ok(())
 }
@@ -66,31 +118,51 @@ fn collect_source_files() -> Result<Vec<PathBuf>> {
     Ok(sources)
 }
 
-fn compile_sources(
+fn compile_sources_parallel(
+    ctx: &BuildContext,
     sources: &[PathBuf],
     build_dir: &Path,
-    release: bool,
 ) -> Result<Vec<PathBuf>> {
-    let obj_dir = build_dir.join("obj");
+    let mut obj_dir = build_dir.join("obj");
     fs::create_dir_all(&obj_dir).context("Failed to create object files directory")?;
 
-    // Create obj directory
-    let mut object_files = Vec::new();
+    let object_files: Result<Vec<PathBuf>> = sources
+        .par_iter()
+        .map(|source| {
+            let obj_file = get_object_file_path(source, &obj_dir)?;
+            let dep_file = obj_file.with_extension("d");
 
-    for source in sources {
-        let obj_file = get_object_file_path(source, &obj_dir)?;
+            if needs_rebuild(source, &obj_file, &dep_file)? {
+                compile_single_file(ctx, source, &obj_file, &dep_file)?;
+            }
+            Ok(obj_file)
+        })
+        .collect();
 
-        if needs_rebuild(source, &obj_file)? {
-            compile_single_file(source, &obj_file, release)?;
-        }
-
-        object_files.push(obj_file);
-    }
-
-    Ok(object_files)
+    object_files
 }
 
-fn get_object_file_path( source: &Path, obj_dir: &Path) -> Result<PathBuf> {
+// fn compile_sources(sources: &[PathBuf], build_dir: &Path, release: bool) -> Result<Vec<PathBuf>> {
+//     let obj_dir = build_dir.join("obj");
+//     fs::create_dir_all(&obj_dir).context("Failed to create object files directory")?;
+
+//     // Create obj directory
+//     let mut object_files = Vec::new();
+
+//     for source in sources {
+//         let obj_file = get_object_file_path(source, &obj_dir)?;
+
+//         if needs_rebuild(source, &obj_file)? {
+//             compile_single_file(source, &obj_file, release)?;
+//         }
+
+//         object_files.push(obj_file);
+//     }
+
+//     Ok(object_files)
+// }
+
+fn get_object_file_path(source: &Path, obj_dir: &Path) -> Result<PathBuf> {
     let relatives = source
         .strip_prefix(&crate::core::get_root())
         .unwrap_or(source);
@@ -104,73 +176,83 @@ fn get_object_file_path( source: &Path, obj_dir: &Path) -> Result<PathBuf> {
     Ok(obj_path)
 }
 
-fn needs_rebuild(source: &Path, object: &Path) -> Result<bool> {
-    if !object.exists() {
+fn needs_rebuild(source: &Path, obj_file: &Path, dep_file: &Path) -> Result<bool> {
+    if !obj_file.exists() || !dep_file.exists() {
         return Ok(true);
     }
 
-    let source_modified = fs::metadata(source)?.modified()?;
-    let object_modified = fs::metadata(object)?.modified()?;
+    let obj_time = fs::metadata(obj_file)?.modified()?;
+    let src_time = fs::metadata(source)?.modified()?;
 
-    Ok(source_modified > object_modified)
+    if src_time > obj_time {
+        return Ok(true);
+    }
+
+    if let Ok(content) = fs::read_to_string(dep_file) {
+        let parts: Vec<&str> = content
+            .split_whitespace()
+            .filter(|s| *s != "\\" && !s.ends_with(':'))
+            .collect();
+
+        for part in parts {
+            let dep_path = Path::new(part);
+            if dep_path.exists() {
+                if let Ok(metadata) = fs::metadata(dep_path) {
+                    if let Ok(dep_time) = metadata.modified() {
+                        if dep_time > obj_time {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(false)
 }
 
-fn compile_single_file(source: &Path, output: &Path, release: bool) -> Result<()> {
-    let mut cmd = Command::new(get_compiler_path()?);
+fn compile_single_file(
+    ctx: &BuildContext,
+    source: &Path,
+    output: &Path,
+    dep_file: &Path,
+) -> Result<()> {
+    let mut cmd = Command::new(&ctx.compiler);
 
-    // Basic flags
-    cmd.arg("-c").arg(source).arg("-o").arg(output);
-
-    // C++ standard
-    let std_flag = match crate::core::get_manifest().package.edition.as_str() {
-        "cpp20" => "-std=c++20",
-        "cpp23" => "-std=c++23",
-        "cpp26" => "-std=c++26",
-        _ => "-std=c++17",
-    };
-    cmd.arg(std_flag);
-
-    // Optimization
-    if release {
-        cmd.arg("-03");
-    } else {
-        cmd.arg("-O0").arg("-g");
-    }
-
-    // Warnings
-    cmd.arg("-Wall").arg("-Wextra");
+    cmd.args(&ctx.flags)
+        .arg("-c")
+        .arg(source)
+        .arg("-o")
+        .arg(output);
 
     // Include paths
-    let include_dir = crate::core::get_root()
-        .join("packages")
-        .join(crate::util::detect_triplet())
-        .join("include");
-    if include_dir.exists() {
-        cmd.arg(format!("-I{}", include_dir.display()));
+    for path in &ctx.include_paths {
+        cmd.arg(format!("-I{}", path.display()));
     }
 
-    // Package include paths (if enabled)
-    // if let Some(pm) = &self.package_manager {
-    //     // for path in pm.get_include_path() {
-    //     //     cmd.arg(format!("-I{}", path.display()));
-    //     // }
-    // }
+    cmd.arg("-MMD").arg("-MF").arg(dep_file);
 
     let output_result = cmd.output().context("Failed to execute compiler")?;
 
     if !output_result.status.success() {
-        eprintln!("{}", String::from_utf8_lossy(&output_result.stderr));
-        bail!("Compilation failed for {:?}", source);
+        eprintln!(
+            "Error compiling {:?}:\n{}",
+            source,
+            String::from_utf8_lossy(&output_result.stderr)
+        );
+        bail!("Compilation failed");
     }
 
     Ok(())
 }
 
-fn link_executable( objects: &[PathBuf], build_dir: &Path, release: bool) -> Result<()> {
+fn link_executable(ctx: &BuildContext, objects: &[PathBuf], build_dir: &Path) -> Result<()> {
     let binary_name = crate::core::get_binary_name();
     let output = build_dir.join(&binary_name);
 
-    let mut cmd = Command::new(get_compiler_path()?);
+    let mut cmd = Command::new(&ctx.compiler);
+
+    cmd.arg("-fuse-ld=lld");
 
     // Object files
     for obj in objects {
@@ -180,82 +262,89 @@ fn link_executable( objects: &[PathBuf], build_dir: &Path, release: bool) -> Res
     // Output
     cmd.arg("-o").arg(&output);
 
-    // Optimization
-    if release {
-        cmd.arg("-O3");
-        cmd.arg("-s"); // Strip symbols
+    // Libraries paths
+    for path in &ctx.lib_paths {
+        cmd.arg(format!("-L{}", path.display()));
     }
 
-    // Library paths (if enabled)
-    // if let Some(pm) = &self.package_manager {
-    //     // for path in pm.get_lib_paths() {
-    //     //     cmd.arg(format!("-L{}", path.display()));
-    //     // }
-    // }
+    let mut libs_to_link = Vec::new();
+
+    for (pkg_name, dep) in &get_manifest().dependencies {
+        match dep {
+            Dependency::Simple(_) => {
+                libs_to_link.push(pkg_name.clone());
+            }
+            Dependency::Detailed(detail) => {
+                if detail.libs.is_empty() {
+                    libs_to_link.push(pkg_name.clone());
+                } else {
+                    libs_to_link.extend(detail.libs.clone());
+                }
+            }
+        }
+    }
+
+    // Link libraries
+    for lib in &libs_to_link {
+        cmd.arg(format!("-l{}", lib));
+    }
+
+    // Optimization
+    if ctx.release && !cfg!(windows) {
+        cmd.arg("-s");
+    }
 
     // Execute linking
     let output_result = cmd.output().context("Failed to execute linker")?;
 
     if !output_result.status.success() {
-        eprintln!("{}", String::from_utf8_lossy(&output_result.stderr));
+        eprintln!(
+            "Linker Error:\n{}",
+            String::from_utf8_lossy(&output_result.stderr)
+        );
         bail!("Linking failed");
     }
 
     Ok(())
 }
 
-fn generate_compile_commands(
-    sources: &[PathBuf],
-    build_dir: &Path,
-    release: bool,
-) -> Result<()> {
-    let mut commands = Vec::new();
-    let profile = if release { "release" } else { "debug" };
-
-    for source in sources {
-        let mut cmd = Vec::new();
-        cmd.push(get_compiler_path()?.to_string_lossy().to_string());
-        cmd.push("-c".to_string());
-        cmd.push(source.to_string_lossy().to_string());
-
-        // C++ standard
-        let std_flag = match crate::core::get_manifest().package.edition.as_str() {
-            "cpp20" => "-std=c++20",
-            "cpp23" => "-std=c++23",
-            _ => "-std=c++17",
-        };
-        cmd.push(std_flag.to_string());
-
-        // Optimization
-        if release {
-            cmd.push("-O3".to_string());
-        } else {
-            cmd.push("-O0".to_string());
-            cmd.push("-g".to_string());
-        }
-
-        // Warnings
-        cmd.push("-Wall".to_string());
-        cmd.push("-Wextra".to_string());
-
-        // Include paths
-        let include_dir = crate::core::get_root().join("include");
-        if include_dir.exists() {
-            cmd.push(format!("-I{}", include_dir.display()));
-        }
-
-        commands.push(serde_json::json!({
-            "directory": build_dir.to_string_lossy(),
-            "command": cmd.join(" "),
-            "file": source.to_string_lossy(),
-        }));
+fn copy_dlls(manifest: &Manifest, build_dir: &Path) -> Result<()> {
+    if !cfg!(windows) {
+        return Ok(());
     }
 
-    let compile_commands_path = crate::core::get_root().join("compile_commands.json");
-    let file = fs::File::create(&compile_commands_path)
-        .context("Failed to create compile_commands.json")?;
-    serde_json::to_writer_pretty(file, &commands)
-        .context("Failed to write compile_commands.json")?;
+    let vcpkg_bin = get_root()
+        .join("packages")
+        .join(crate::util::detect_triplet())
+        .join("bin");
+
+    if !vcpkg_bin.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&vcpkg_bin)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("dll") {
+            let dest = build_dir.join(path.file_name().unwrap());
+
+            if should_copy(&path, &dest)? {
+                fs::copy(&path, &dest).context(format!("Failed to copy {:?}", path.file_name()))?;
+            }
+        }
+    }
 
     Ok(())
+}
+
+fn should_copy(src: &Path, dest: &Path) -> Result<bool> {
+    if !dest.exists() {
+        return Ok(true);
+    }
+
+    let src_time = fs::metadata(src)?.modified()?;
+    let dest_time = fs::metadata(dest)?.modified()?;
+
+    Ok(src_time > dest_time)
 }
