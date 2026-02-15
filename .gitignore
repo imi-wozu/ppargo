@@ -1,1 +1,12 @@
-/target
+/target/
+/packages/
+/dist/
+**/target/
+/docs/
+/.vscode/
+/scripts/
+*.obj
+*.o
+*.exe
+*.dll
+*.pdb

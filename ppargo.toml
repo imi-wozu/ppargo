@@ -1,7 +1,5 @@
-﻿# Example ppargo.toml configuration file
-
 [package]
-name = "my_cpp_project"
+name = "ppargo"
 version = "0.1.0"
 edition = "cpp23"
 
@@ -12,18 +10,13 @@ linker = "lld"
 [dependencies]
 
 [features]
-# Enable/disable package management
 packages = true
-
-# Choose package manager: "vcpkg" or "ppargo", default is "vcpkg"
 package_manager = "vcpkg"
-
-# Required when package_manager = "vcpkg"
-vcpkg_root = "C:\\vcpkg"
+vcpkg_root = "C:\\env\\vcpkg"
 
 [build]
 source_dir = "src"
 include_dirs = ["src", "include"]
 exclude = ["target/**"]
 output_dir = "target/cpp"
-binary_name = "my_cpp_project"
+binary_name = "argo"
