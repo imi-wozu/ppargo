@@ -5,6 +5,7 @@
 /docs/
 /.vscode/
 /scripts/
+/tests/
 *.obj
 *.o
 *.exe
