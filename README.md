@@ -7,6 +7,12 @@ Cargo-like C++ build system and package manager.
 - `clang++`
 - `vcpkg`
 
+### Quick Start
+
+```powershell
+argo init
+```
+
 ### Commands
 
 ```text
@@ -21,6 +27,7 @@ Cargo-like C++ build system and package manager.
   version                    Print version
   help                       Print this help
 ```
+
 ### Manifest Contract
 
 - `[package]`
@@ -39,6 +46,5 @@ Backends:
 
 Notes:
 - This project has only been tested in a Windows environment.
-- Some packages have names that differ from the actual .lib files. When adding, specify the .lib file name directly instead of using the add command.
-- `package_manager` implies package support. Omit `packages = true` when a manager is selected; set `packages = false` only to override and disable packages explicitly.
-
+- Some packages have names that differ from the actual `.lib` files. When adding, specify the `.lib` file name directly instead of using the add command.
+- `package_manager` implies package support. Omit `packages = true` when a manager is selected; set `packages = false` to override and disable packages explicitly.

@@ -1,10 +1,11 @@
+/.github/
 /target/
+**/target/
 /packages/
 /dist/
-**/target/
 /docs/
-/.vscode/
 /scripts/
+/.vscode/
 /tests/
 *.obj
 *.o
