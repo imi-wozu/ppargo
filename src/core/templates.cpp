@@ -12,8 +12,6 @@ auto main() -> int {
 )";
 }
 
-auto gitignore_template() -> std::string {
-    return "/target\n/packages\n";
-}
+auto gitignore_template() -> std::string { return "/target\n/packages\n"; }
 
 }  // namespace core::templates

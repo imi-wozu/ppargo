@@ -5,7 +5,6 @@ edition = "cpp26"
 
 [toolchain]
 compiler = "clang++"
-linker = "lld"
 
 [dependencies]
 
