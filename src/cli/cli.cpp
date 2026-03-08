@@ -1,4 +1,4 @@
-#include "cli/cli.hpp"
+﻿#include "cli/cli.hpp"
 
 #include <algorithm>
 
@@ -8,9 +8,9 @@
 namespace cli {
 
 auto run(int argc, char* argv[]) -> util::Status {
-    return parse(argc, argv).and_then([](auto&& parsed) {
-        return std::visit([](auto&& cmd) { return cmd.execute(); }, parsed);
-    });
+    auto parsed = GUARD(parse(argc, argv));
+    GUARD(std::visit([](auto&& cmd) { return cmd.execute(); }, parsed));
+    return util::Ok;
 }
 
 }  // namespace cli
