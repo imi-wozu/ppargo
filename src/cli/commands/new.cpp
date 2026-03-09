@@ -1,7 +1,6 @@
 #include "cli/commands/commands.hpp"
 #include "core/scaffold.hpp"
 #include "util/output.hpp"
-#include "util/result.hpp"
 
 namespace cli {
 
