@@ -1,7 +1,9 @@
 #pragma once
 
+#include <span>
+
 #include "util/result.hpp"
 
 namespace cli {
-auto run(int argc, char* argv[]) -> util::Status;
+auto run(std::span<char*> args) -> util::Status;
 }

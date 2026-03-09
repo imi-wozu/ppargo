@@ -1,7 +1,5 @@
 #include "core/scaffold.hpp"
 
-#include <regex>
-#include <string>
 #include <string_view>
 
 #include "core/manifest.hpp"
