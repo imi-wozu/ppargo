@@ -128,6 +128,10 @@ auto format_unknown_command(std::string_view cmd) -> std::string {
         cmd);
 }
 
+auto unexpected_argument_error(std::string_view value) -> util::Error {
+    return util::make_error(std::format("unexpected argument '{}'", value));
+}
+
 auto require_option_value(std::span<char*> args, std::string_view option,
                           std::string_view usage) -> util::Result<std::string> {
     if (!has_option_token(args, option)) {
@@ -228,28 +232,17 @@ auto parse_global_options(std::span<char*> args)
     return result;
 }
 
-void apply_global_options(cli::BuildCommand& command,
-                          const GlobalOptions& options) {
-    command.quiet = command.quiet || options.quiet;
-}
-
-void apply_global_options(cli::CheckCommand& command,
-                          const GlobalOptions& options) {
-    command.quiet = command.quiet || options.quiet;
-}
-
-void apply_global_options(cli::RunCommand& command,
-                          const GlobalOptions& options) {
-    command.quiet = command.quiet || options.quiet;
-}
-
-void apply_global_options(cli::TestCommand& command,
-                          const GlobalOptions& options) {
-    command.quiet = command.quiet || options.quiet;
-}
+template <typename T>
+concept HasQuiet = requires(T command) {
+    { command.quiet } -> std::convertible_to<bool&>;
+};
 
 template <typename CommandType>
-void apply_global_options(CommandType&, const GlobalOptions&) {}
+void apply_global_options(CommandType& command, const GlobalOptions& options) {
+    if constexpr (HasQuiet<CommandType>) {
+        command.quiet = command.quiet || options.quiet;
+    }
+}
 
 auto apply_global_options(cli::ParsedCommand command,
                           const GlobalOptions& options) -> cli::ParsedCommand {
@@ -317,11 +310,21 @@ struct BuildLikeParseState {
     std::optional<std::string> profile;
 };
 
-auto make_usage_error(std::string_view usage_line, std::string_view message)
-    -> util::Result<cli::ParsedCommand> {
-    return util::make_unexpected(
+auto make_usage_error_value(std::string_view usage_line,
+                            std::string_view message) -> util::Error {
+    return util::make_error(
         std::format("{}\n\nUsage: {}\n\nFor more information, try '--help'.",
                     message, usage_line));
+}
+
+auto make_usage_error_value(const CommandSpec& spec, std::string_view message)
+    -> util::Error {
+    return make_usage_error_value(spec.usage_line, message);
+}
+
+auto make_usage_error(std::string_view usage_line, std::string_view message)
+    -> util::Result<cli::ParsedCommand> {
+    return std::unexpected(make_usage_error_value(usage_line, message));
 }
 
 auto make_usage_error(const CommandSpec& spec, std::string_view message)
@@ -699,6 +702,26 @@ concept HasBenches = requires(T command) {
     { command.benches_all } -> std::convertible_to<bool&>;
 };
 
+template <typename T>
+concept HasKeepGoing = requires(T command) {
+    { command.keep_going } -> std::convertible_to<bool&>;
+};
+
+template <typename T>
+concept HasNoRun = requires(T command) {
+    { command.no_run } -> std::convertible_to<bool&>;
+};
+
+template <typename T>
+concept HasNoFailFast = requires(T command) {
+    { command.no_fail_fast } -> std::convertible_to<bool&>;
+};
+
+template <typename T>
+concept HasTestScope = requires(T command) {
+    { command.scope } -> std::convertible_to<cli::TestScope&>;
+};
+
 template <HasRelease T>
 auto apply_common_option(
     T& command, BuildLikeParseState& state, const OptionSpec& option,
@@ -737,6 +760,11 @@ auto apply_shared_build_like_option(
             if constexpr (HasBins<T>) {
                 command.bins.push_back(*value);
                 return util::Ok;
+            } else if constexpr (std::same_as<T, cli::RunCommand>) {
+                if (!command.bin.has_value()) {
+                    command.bin = *value;
+                }
+                return util::Ok;
             }
             break;
         case OptionAction::BinsAll:
@@ -748,6 +776,11 @@ auto apply_shared_build_like_option(
         case OptionAction::Example:
             if constexpr (HasExamples<T>) {
                 command.examples.push_back(*value);
+                return util::Ok;
+            } else if constexpr (std::same_as<T, cli::RunCommand>) {
+                if (!command.example.has_value()) {
+                    command.example = *value;
+                }
                 return util::Ok;
             }
             break;
@@ -778,6 +811,26 @@ auto apply_shared_build_like_option(
         case OptionAction::BenchesAll:
             if constexpr (HasBenches<T>) {
                 command.benches_all = true;
+                return util::Ok;
+            }
+            break;
+        case OptionAction::AllTargets:
+            if constexpr (HasBins<T>) {
+                command.bins_all = true;
+            }
+            if constexpr (HasExamples<T>) {
+                command.examples_all = true;
+            }
+            if constexpr (HasTests<T>) {
+                command.tests_all = true;
+            }
+            if constexpr (HasBenches<T>) {
+                command.benches_all = true;
+            }
+            return util::Ok;
+        case OptionAction::KeepGoing:
+            if constexpr (HasKeepGoing<T>) {
+                command.keep_going = true;
                 return util::Ok;
             }
             break;
@@ -823,6 +876,40 @@ auto apply_shared_build_like_option(
                 return set_color(command.color, *value);
             }
             break;
+        case OptionAction::NoRun:
+            if constexpr (HasNoRun<T>) {
+                command.no_run = true;
+                return util::Ok;
+            }
+            break;
+        case OptionAction::NoFailFast:
+            if constexpr (HasNoFailFast<T>) {
+                command.no_fail_fast = true;
+                return util::Ok;
+            }
+            break;
+        case OptionAction::Unit:
+            if constexpr (HasTestScope<T>) {
+                if (command.scope == cli::TestScope::Integration) {
+                    return std::unexpected(util::make_error(
+                        "the arguments '--unit' and '--integration' cannot be "
+                        "used together"));
+                }
+                command.scope = cli::TestScope::Unit;
+                return util::Ok;
+            }
+            break;
+        case OptionAction::Integration:
+            if constexpr (HasTestScope<T>) {
+                if (command.scope == cli::TestScope::Unit) {
+                    return std::unexpected(util::make_error(
+                        "the arguments '--unit' and '--integration' cannot be "
+                        "used together"));
+                }
+                command.scope = cli::TestScope::Integration;
+                return util::Ok;
+            }
+            break;
         default:
             break;
     }
@@ -830,107 +917,11 @@ auto apply_shared_build_like_option(
     return apply_common_option(command, state, option, value, option_name);
 }
 
-auto apply_option(cli::BuildCommand& command, BuildLikeParseState& state,
-                  const OptionSpec& option,
-                  const std::optional<std::string>& value,
-                  std::string_view option_name) -> util::Status {
-    switch (option.action) {
-        case OptionAction::AllTargets:
-            command.bins_all = true;
-            command.examples_all = true;
-            command.tests_all = true;
-            return util::Ok;
-        default:
-            return apply_shared_build_like_option(command, state, option, value,
-                                                  option_name);
-    }
-}
-
-auto apply_option(cli::CheckCommand& command, BuildLikeParseState& state,
-                  const OptionSpec& option,
-                  const std::optional<std::string>& value,
-                  std::string_view option_name) -> util::Status {
-    switch (option.action) {
-        case OptionAction::AllTargets:
-            command.bins_all = true;
-            command.examples_all = true;
-            command.tests_all = true;
-            command.benches_all = true;
-            return util::Ok;
-        case OptionAction::KeepGoing:
-            command.keep_going = true;
-            return util::Ok;
-        default:
-            return apply_shared_build_like_option(command, state, option, value,
-                                                  option_name);
-    }
-}
-
-auto apply_option(cli::RunCommand& command, BuildLikeParseState& state,
-                  const OptionSpec& option,
-                  const std::optional<std::string>& value,
-                  std::string_view option_name) -> util::Status {
-    switch (option.action) {
-        case OptionAction::Bin:
-            if (!command.bin.has_value()) {
-                command.bin = *value;
-            }
-            return util::Ok;
-        case OptionAction::Example:
-            if (!command.example.has_value()) {
-                command.example = *value;
-            }
-            return util::Ok;
-        default:
-            return apply_shared_build_like_option(command, state, option, value,
-                                                  option_name);
-    }
-}
-
-auto apply_option(cli::TestCommand& command, BuildLikeParseState& state,
-                  const OptionSpec& option,
-                  const std::optional<std::string>& value,
-                  std::string_view option_name) -> util::Status {
-    switch (option.action) {
-        case OptionAction::AllTargets:
-            command.tests_all = true;
-            command.examples_all = true;
-            command.benches_all = true;
-            return util::Ok;
-        case OptionAction::NoRun:
-            command.no_run = true;
-            return util::Ok;
-        case OptionAction::NoFailFast:
-            command.no_fail_fast = true;
-            return util::Ok;
-        case OptionAction::Unit:
-            if (command.scope == cli::TestScope::Integration) {
-                return std::unexpected(util::make_error(
-                    "the arguments '--unit' and '--integration' cannot be "
-                    "used together"));
-            }
-            command.scope = cli::TestScope::Unit;
-            return util::Ok;
-        case OptionAction::Integration:
-            if (command.scope == cli::TestScope::Unit) {
-                return std::unexpected(util::make_error(
-                    "the arguments '--unit' and '--integration' cannot be "
-                    "used together"));
-            }
-            command.scope = cli::TestScope::Integration;
-            return util::Ok;
-        default:
-            return apply_shared_build_like_option(command, state, option, value,
-                                                  option_name);
-    }
-}
-
 template <typename CommandType>
     requires(!std::same_as<CommandType, cli::TestCommand>)
 auto handle_positional_argument(CommandType&, std::string_view value)
     -> util::Status {
-    return std::unexpected(
-        util::make_error(std::format("unexpected argument '{}'", value)));
+    return std::unexpected(unexpected_argument_error(value));
 }
 
 auto handle_positional_argument(cli::TestCommand& command,
@@ -939,8 +930,7 @@ auto handle_positional_argument(cli::TestCommand& command,
         command.test_filter = std::string(value);
         return util::Ok;
     }
-    return std::unexpected(
-        util::make_error(std::format("unexpected argument '{}'", value)));
+    return std::unexpected(unexpected_argument_error(value));
 }
 
 template <HasRelease T>
@@ -948,6 +938,18 @@ auto finalize_profile_base(T& command, const BuildLikeParseState& state)
     -> util::Status {
     GUARD(finalize_profile(command.release, state));
     return util::Ok;
+}
+
+template <typename CommandType>
+consteval auto validate_shared_option_contracts() -> void {
+    if constexpr (std::same_as<CommandType, cli::BuildCommand>) {
+        static_assert(!HasBenches<CommandType>,
+                      "BuildCommand must not expose bench selector fields");
+    }
+    if constexpr (std::same_as<CommandType, cli::TestCommand>) {
+        static_assert(!HasBins<CommandType>,
+                      "TestCommand must not expose bin selector fields");
+    }
 }
 
 template <typename T>
@@ -1005,6 +1007,8 @@ template <typename CommandType>
 auto parse_build_like_command(std::span<char*> args, const CommandSpec& spec,
                               const GlobalOptions& global_options)
     -> util::Result<cli::ParsedCommand> {
+    validate_shared_option_contracts<CommandType>();
+
     CommandType command{};
     BuildLikeParseState state{};
     bool passthrough = false;
@@ -1037,20 +1041,28 @@ auto parse_build_like_command(std::span<char*> args, const CommandSpec& spec,
             std::optional<std::string> parsed_value;
             const auto option_name = matched_option_name(*option, value);
             if (option->takes_value) {
-                auto read = read_option_value(args, i, option_name);
+                auto read =
+                    read_option_value(args, i, option_name)
+                        .transform_error([&](const auto& err) {
+                            return make_usage_error_value(spec, err.message);
+                        });
                 if (!read) {
-                    return make_usage_error(spec, read.error().message);
+                    return std::unexpected(std::move(read.error()));
                 }
                 if (option->action == OptionAction::Profile &&
-                    spec.profile_test_is_unsupported && *read == "test") {
+                    *read == "test" && spec.profile_test_is_unsupported) {
                     return make_unsupported_error(spec, "--profile test");
                 }
                 parsed_value = std::move(*read);
             }
-            auto status = apply_option(command, state, *option, parsed_value,
-                                       option_name);
+            auto status =
+                apply_shared_build_like_option(command, state, *option,
+                                               parsed_value, option_name)
+                    .transform_error([&](const auto& err) {
+                        return make_usage_error_value(spec, err.message);
+                    });
             if (!status) {
-                return make_usage_error(spec, status.error().message);
+                return std::unexpected(std::move(status.error()));
             }
             continue;
         }
@@ -1072,9 +1084,12 @@ auto parse_build_like_command(std::span<char*> args, const CommandSpec& spec,
 
     apply_global_options(command, global_options);
 
-    auto status = finalize_command(command, state);
+    auto status =
+        finalize_command(command, state).transform_error([&](const auto& err) {
+            return make_usage_error_value(spec, err.message);
+        });
     if (!status) {
-        return make_usage_error(spec, status.error().message);
+        return std::unexpected(std::move(status.error()));
     }
     return cli::ParsedCommand{std::move(command)};
 }
@@ -1089,8 +1104,8 @@ auto parse_version_command(std::span<char*> args, bool implicit_verbose = false)
             command.verbose = true;
             continue;
         }
-        return make_usage_error(version_usage(),
-                                std::format("unexpected argument '{}'", value));
+        return std::unexpected(make_usage_error_value(
+            version_usage(), unexpected_argument_error(value).message));
     }
 
     return cli::ParsedCommand{command};
@@ -1117,8 +1132,8 @@ auto parse_help_command(std::span<char*> args)
     }
 
     if (it != tokens.end()) {
-        return make_usage_error(help_usage(),
-                                std::format("unexpected argument '{}'", *it));
+        return std::unexpected(make_usage_error_value(
+            help_usage(), unexpected_argument_error(*it).message));
     }
 
     return cli::ParsedCommand{cli::HelpCommand{.topic = *topic}};
