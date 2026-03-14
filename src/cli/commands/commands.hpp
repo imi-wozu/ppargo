@@ -90,8 +90,6 @@ struct BuildCommand {
     bool offline = false;
     bool frozen = false;
     int verbose = 0;
-    bool quiet = false;
-    std::string color = "auto";
     auto execute() const -> util::Status;
 };
 
@@ -112,8 +110,6 @@ struct CheckCommand {
     bool offline = false;
     bool frozen = false;
     int verbose = 0;
-    bool quiet = false;
-    std::string color = "auto";
     bool keep_going = false;
     auto execute() const -> util::Status;
 };
@@ -122,7 +118,6 @@ struct RunCommand {
     bool release = false;
     std::optional<std::string> bin;
     std::optional<std::string> example;
-    bool quiet = false;
     auto execute() const -> util::Status;
 };
 
@@ -146,8 +141,6 @@ struct TestCommand {
     std::optional<std::string> test_filter;
     std::vector<std::string> passthrough_args;
     int verbose = 0;
-    bool quiet = false;
-    std::string color = "auto";
     auto execute() const -> util::Status;
 };
 

@@ -158,6 +158,23 @@ struct GlobalParseResult {
     std::size_t command_index = 0;
 };
 
+auto parse_color_mode(std::string_view value)
+    -> util::Result<util::output::ColorMode>;
+
+auto default_output_options(const GlobalOptions& options)
+    -> util::output::OutputOptions {
+    return util::output::OutputOptions{
+        .quiet = options.quiet,
+        .color_mode = util::output::ColorMode::Auto,
+    };
+}
+
+auto supports_color_option(std::string_view command_name) -> bool {
+    return command_name == "build"sv || command_name == "b"sv ||
+           command_name == "check"sv || command_name == "c"sv ||
+           command_name == "test"sv || command_name == "t"sv;
+}
+
 auto global_usage() -> std::string_view { return "argo [OPTIONS] [COMMAND]"; }
 auto help_usage() -> std::string_view { return "argo help [COMMAND]"; }
 auto version_usage() -> std::string_view { return "argo version [--verbose]"; }
@@ -230,28 +247,6 @@ auto parse_global_options(std::span<char*> args)
     }
 
     return result;
-}
-
-template <typename T>
-concept HasQuiet = requires(T command) {
-    { command.quiet } -> std::convertible_to<bool&>;
-};
-
-template <typename CommandType>
-void apply_global_options(CommandType& command, const GlobalOptions& options) {
-    if constexpr (HasQuiet<CommandType>) {
-        command.quiet = command.quiet || options.quiet;
-    }
-}
-
-auto apply_global_options(cli::ParsedCommand command,
-                          const GlobalOptions& options) -> cli::ParsedCommand {
-    std::visit(
-        [&](auto& parsed_command) {
-            apply_global_options(parsed_command, options);
-        },
-        command);
-    return command;
 }
 
 enum class OptionAction {
@@ -611,15 +606,21 @@ auto set_jobs(std::optional<int>& jobs, std::string_view value,
     return util::Ok;
 }
 
-auto set_color(std::string& color, std::string_view value) -> util::Status {
+auto parse_color_mode(std::string_view value)
+    -> util::Result<util::output::ColorMode> {
     if (value != "auto" && value != "always" && value != "never") {
         return std::unexpected(util::make_error(std::format(
             "invalid value '{}' for '--color': expected 'auto', 'always', or "
             "'never'",
             value)));
     }
-    color = std::string(value);
-    return util::Ok;
+    if (value == "always") {
+        return util::output::ColorMode::Always;
+    }
+    if (value == "never") {
+        return util::output::ColorMode::Never;
+    }
+    return util::output::ColorMode::Auto;
 }
 
 auto set_profile(BuildLikeParseState& state, std::string value)
@@ -658,8 +659,7 @@ concept HasRelease = requires(T command) {
 };
 
 template <typename T>
-concept HasQuietAndVerbose = requires(T command) {
-    { command.quiet } -> std::convertible_to<bool&>;
+concept HasVerbose = requires(T command) {
     { command.verbose } -> std::convertible_to<int&>;
 };
 
@@ -675,7 +675,6 @@ concept HasInvocationOverrides = requires(T command) {
     { command.manifest_path };
     { command.target_dir };
     { command.jobs };
-    { command.color };
 };
 
 template <typename T>
@@ -732,13 +731,13 @@ auto apply_common_option(
             state.saw_release_flag = true;
             return util::Ok;
         case OptionAction::Verbose:
-            if constexpr (HasQuietAndVerbose<T>) {
+            if constexpr (HasVerbose<T>) {
                 ++command.verbose;
                 return util::Ok;
             }
             break;
         case OptionAction::VerboseDouble:
-            if constexpr (HasQuietAndVerbose<T>) {
+            if constexpr (HasVerbose<T>) {
                 command.verbose += 2;
                 return util::Ok;
             }
@@ -752,7 +751,8 @@ auto apply_common_option(
 
 template <typename T>
 auto apply_shared_build_like_option(
-    T& command, BuildLikeParseState& state, const OptionSpec& option,
+    T& command, BuildLikeParseState& state, util::output::OutputOptions& output,
+    const OptionSpec& option,
     [[maybe_unused]] const std::optional<std::string>& value,
     std::string_view option_name) -> util::Status {
     switch (option.action) {
@@ -872,10 +872,12 @@ auto apply_shared_build_like_option(
         case OptionAction::Profile:
             return set_profile(state, *value);
         case OptionAction::Color:
-            if constexpr (HasInvocationOverrides<T>) {
-                return set_color(command.color, *value);
+            if (auto color_mode = parse_color_mode(*value); color_mode) {
+                output.color_mode = *color_mode;
+                return util::Ok;
+            } else {
+                return std::unexpected(std::move(color_mode.error()));
             }
-            break;
         case OptionAction::NoRun:
             if constexpr (HasNoRun<T>) {
                 command.no_run = true;
@@ -953,15 +955,16 @@ consteval auto validate_shared_option_contracts() -> void {
 }
 
 template <typename T>
-    requires HasRelease<T> && HasQuietAndVerbose<T> && HasDependencyWorkflow<T>
-auto finalize_build_like_base(T& command, const BuildLikeParseState& state)
+    requires HasRelease<T> && HasVerbose<T> && HasDependencyWorkflow<T>
+auto finalize_build_like_base(T& command, const BuildLikeParseState& state,
+                              const util::output::OutputOptions& output)
     -> util::Status {
     GUARD(finalize_profile_base(command, state));
     if (command.frozen) {
         command.locked = true;
         command.offline = true;
     }
-    if (command.quiet && command.verbose > 0) {
+    if (output.quiet && command.verbose > 0) {
         return std::unexpected(util::make_error(
             "the arguments '--quiet' and '--verbose' cannot be used together"));
     }
@@ -969,17 +972,22 @@ auto finalize_build_like_base(T& command, const BuildLikeParseState& state)
 }
 
 auto finalize_command(cli::BuildCommand& command,
-                      const BuildLikeParseState& state) -> util::Status {
-    return finalize_build_like_base(command, state);
+                      const BuildLikeParseState& state,
+                      const util::output::OutputOptions& output)
+    -> util::Status {
+    return finalize_build_like_base(command, state, output);
 }
 
 auto finalize_command(cli::CheckCommand& command,
-                      const BuildLikeParseState& state) -> util::Status {
-    return finalize_build_like_base(command, state);
+                      const BuildLikeParseState& state,
+                      const util::output::OutputOptions& output)
+    -> util::Status {
+    return finalize_build_like_base(command, state, output);
 }
 
 auto finalize_command(cli::RunCommand& command,
-                      const BuildLikeParseState& state) -> util::Status {
+                      const BuildLikeParseState& state,
+                      const util::output::OutputOptions&) -> util::Status {
     GUARD(finalize_profile_base(command, state));
     if (command.bin.has_value() && command.example.has_value()) {
         return std::unexpected(util::make_error(
@@ -989,8 +997,10 @@ auto finalize_command(cli::RunCommand& command,
 }
 
 auto finalize_command(cli::TestCommand& command,
-                      const BuildLikeParseState& state) -> util::Status {
-    GUARD(finalize_build_like_base(command, state));
+                      const BuildLikeParseState& state,
+                      const util::output::OutputOptions& output)
+    -> util::Status {
+    GUARD(finalize_build_like_base(command, state, output));
     const bool has_other_selectors =
         command.tests_all || !command.tests.empty() || command.examples_all ||
         !command.examples.empty() || command.benches_all ||
@@ -1011,6 +1021,7 @@ auto parse_build_like_command(std::span<char*> args, const CommandSpec& spec,
 
     CommandType command{};
     BuildLikeParseState state{};
+    auto output = default_output_options(global_options);
     bool passthrough = false;
 
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -1056,7 +1067,7 @@ auto parse_build_like_command(std::span<char*> args, const CommandSpec& spec,
                 parsed_value = std::move(*read);
             }
             auto status =
-                apply_shared_build_like_option(command, state, *option,
+                apply_shared_build_like_option(command, state, output, *option,
                                                parsed_value, option_name)
                     .transform_error([&](const auto& err) {
                         return make_usage_error_value(spec, err.message);
@@ -1082,12 +1093,10 @@ auto parse_build_like_command(std::span<char*> args, const CommandSpec& spec,
         }
     }
 
-    apply_global_options(command, global_options);
-
-    auto status =
-        finalize_command(command, state).transform_error([&](const auto& err) {
-            return make_usage_error_value(spec, err.message);
-        });
+    auto status = finalize_command(command, state, output)
+                      .transform_error([&](const auto& err) {
+                          return make_usage_error_value(spec, err.message);
+                      });
     if (!status) {
         return std::unexpected(std::move(status.error()));
     }
@@ -1168,14 +1177,14 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
     const std::string_view cmd(command_args[0]);
 
     const auto make_command = [&](auto command) -> util::Result<ParsedCommand> {
-        return apply_global_options(ParsedCommand{std::move(command)}, global);
+        return ParsedCommand{std::move(command)};
     };
     const auto apply_result =
         [&](util::Result<ParsedCommand> result) -> util::Result<ParsedCommand> {
         if (!result) {
             return std::unexpected(std::move(result.error()));
         }
-        return apply_global_options(std::move(result.value()), global);
+        return std::move(result.value());
     };
 
     if (cmd == "init"sv) {
@@ -1348,6 +1357,84 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
     }
 
     return util::make_unexpected(format_unknown_command(cmd));
+}
+
+auto parse_output_options(std::span<char*> args)
+    -> util::output::OutputOptions {
+    auto output = util::output::OutputOptions{};
+    std::size_t command_index = args.size();
+    bool seen_subcommand = false;
+    bool passthrough = false;
+
+    for (const auto i : std::views::iota(std::size_t{1}, args.size())) {
+        const std::string_view token(args[i]);
+
+        if (passthrough) {
+            continue;
+        }
+
+        if (seen_subcommand && token == "--"sv) {
+            passthrough = true;
+            continue;
+        }
+
+        if (!seen_subcommand) {
+            if (is_quiet_token(token)) {
+                output.quiet = true;
+                continue;
+            }
+            if (!token.empty() && token.front() != '-') {
+                seen_subcommand = true;
+                command_index = i;
+            }
+            continue;
+        }
+
+        if (is_quiet_token(token)) {
+            output.quiet = true;
+        }
+    }
+
+    if (command_index >= args.size()) {
+        return output;
+    }
+
+    const std::string_view command_name(args[command_index]);
+    if (!supports_color_option(command_name)) {
+        return output;
+    }
+
+    bool command_passthrough = false;
+    constexpr std::string_view kColorPrefix = "--color=";
+    for (std::size_t i = command_index + 1; i < args.size(); ++i) {
+        const std::string_view token(args[i]);
+        if (command_passthrough) {
+            break;
+        }
+        if (token == "--"sv) {
+            command_passthrough = true;
+            continue;
+        }
+        if (token == "--color"sv) {
+            if (i + 1 >= args.size()) {
+                continue;
+            }
+            if (auto color_mode = parse_color_mode(args[i + 1]); color_mode) {
+                output.color_mode = *color_mode;
+            }
+            ++i;
+            continue;
+        }
+        if (token.starts_with(kColorPrefix)) {
+            if (auto color_mode =
+                    parse_color_mode(token.substr(kColorPrefix.size()));
+                color_mode) {
+                output.color_mode = *color_mode;
+            }
+        }
+    }
+
+    return output;
 }
 
 }  // namespace cli
