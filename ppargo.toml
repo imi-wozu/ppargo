@@ -13,7 +13,7 @@ catch2 = "3.12.0"
 
 [features]
 package_manager = "vcpkg"
-vcpkg_root = "C:\\env\\vcpkg"
+vcpkg_root = "C:/env/vcpkg"
 
 [build]
 binary_name = "argo"
