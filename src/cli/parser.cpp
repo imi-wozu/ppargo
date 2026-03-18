@@ -13,7 +13,11 @@
 #include <string_view>
 #include <utility>
 
+#include "cli/catalog.hpp"
+
 using namespace std::string_view_literals;
+
+namespace catalog = cli::catalog;
 
 namespace {
 
@@ -170,9 +174,7 @@ auto default_output_options(const GlobalOptions& options)
 }
 
 auto supports_color_option(std::string_view command_name) -> bool {
-    return command_name == "build"sv || command_name == "b"sv ||
-           command_name == "check"sv || command_name == "c"sv ||
-           command_name == "test"sv || command_name == "t"sv;
+    return catalog::command_supports_color_option(command_name);
 }
 
 auto global_usage() -> std::string_view { return "argo [OPTIONS] [COMMAND]"; }
@@ -249,56 +251,10 @@ auto parse_global_options(std::span<char*> args)
     return result;
 }
 
-enum class OptionAction {
-    Release,
-    Help,
-    Verbose,
-    VerboseDouble,
-    Bin,
-    BinsAll,
-    Example,
-    ExamplesAll,
-    Test,
-    TestsAll,
-    Bench,
-    BenchesAll,
-    AllTargets,
-    ManifestPath,
-    TargetDir,
-    Jobs,
-    Locked,
-    Offline,
-    Frozen,
-    Profile,
-    Color,
-    KeepGoing,
-    NoRun,
-    NoFailFast,
-    Unit,
-    Integration,
-};
-
-struct OptionSpec {
-    OptionAction action;
-    std::string_view long_name;
-    std::string_view short_name{};
-    bool takes_value = false;
-};
-
-struct UnsupportedOptionSpec {
-    std::string_view name;
-    bool takes_value = false;
-};
-
-struct CommandSpec {
-    std::string_view command_name;
-    std::string_view usage_line;
-    cli::HelpTopic help_topic;
-    std::span<const OptionSpec> options;
-    std::span<const UnsupportedOptionSpec> unsupported_options;
-    bool allow_passthrough = false;
-    bool profile_test_is_unsupported = false;
-};
+using OptionAction = catalog::OptionAction;
+using OptionSpec = catalog::OptionSpec;
+using UnsupportedOptionSpec = catalog::UnsupportedOptionSpec;
+using CommandSpec = catalog::BuildLikeCommandSpec;
 
 struct BuildLikeParseState {
     bool saw_release_flag = false;
@@ -334,219 +290,6 @@ auto make_unsupported_error(const CommandSpec& spec, std::string_view option)
         "more information, try '--help'.",
         spec.command_name, option, spec.usage_line));
 }
-
-constexpr std::array kBuildOptions{
-    OptionSpec{OptionAction::Release, "--release", "-r"},
-    OptionSpec{OptionAction::Help, "--help", "-h"},
-    OptionSpec{OptionAction::Verbose, "--verbose", "-v"},
-    OptionSpec{OptionAction::VerboseDouble, "-vv"},
-    OptionSpec{OptionAction::BinsAll, "--bins"},
-    OptionSpec{OptionAction::ExamplesAll, "--examples"},
-    OptionSpec{OptionAction::TestsAll, "--tests"},
-    OptionSpec{OptionAction::AllTargets, "--all-targets"},
-    OptionSpec{OptionAction::Locked, "--locked"},
-    OptionSpec{OptionAction::Offline, "--offline"},
-    OptionSpec{OptionAction::Frozen, "--frozen"},
-    OptionSpec{OptionAction::Bin, "--bin", "", true},
-    OptionSpec{OptionAction::Example, "--example", "", true},
-    OptionSpec{OptionAction::Test, "--test", "", true},
-    OptionSpec{OptionAction::ManifestPath, "--manifest-path", "", true},
-    OptionSpec{OptionAction::TargetDir, "--target-dir", "", true},
-    OptionSpec{OptionAction::Jobs, "--jobs", "-j", true},
-    OptionSpec{OptionAction::Profile, "--profile", "", true},
-    OptionSpec{OptionAction::Color, "--color", "", true},
-};
-
-constexpr std::array kBuildUnsupportedOptions{
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
-    UnsupportedOptionSpec{"--lib"},
-    UnsupportedOptionSpec{"--bench", true},
-    UnsupportedOptionSpec{"--benches"},
-    UnsupportedOptionSpec{"--target", true},
-    UnsupportedOptionSpec{"--message-format", true},
-    UnsupportedOptionSpec{"--artifact-dir", true},
-    UnsupportedOptionSpec{"--ignore-rust-version"},
-    UnsupportedOptionSpec{"--config", true},
-    UnsupportedOptionSpec{"-C"},
-    UnsupportedOptionSpec{"-Z"},
-    UnsupportedOptionSpec{"--future-incompat-report"},
-    UnsupportedOptionSpec{"--keep-going"},
-};
-
-constexpr std::array kCheckOptions{
-    OptionSpec{OptionAction::Release, "--release", "-r"},
-    OptionSpec{OptionAction::Help, "--help", "-h"},
-    OptionSpec{OptionAction::Verbose, "--verbose", "-v"},
-    OptionSpec{OptionAction::VerboseDouble, "-vv"},
-    OptionSpec{OptionAction::BinsAll, "--bins"},
-    OptionSpec{OptionAction::ExamplesAll, "--examples"},
-    OptionSpec{OptionAction::TestsAll, "--tests"},
-    OptionSpec{OptionAction::BenchesAll, "--benches"},
-    OptionSpec{OptionAction::AllTargets, "--all-targets"},
-    OptionSpec{OptionAction::Locked, "--locked"},
-    OptionSpec{OptionAction::Offline, "--offline"},
-    OptionSpec{OptionAction::Frozen, "--frozen"},
-    OptionSpec{OptionAction::KeepGoing, "--keep-going"},
-    OptionSpec{OptionAction::Bin, "--bin", "", true},
-    OptionSpec{OptionAction::Example, "--example", "", true},
-    OptionSpec{OptionAction::Test, "--test", "", true},
-    OptionSpec{OptionAction::Bench, "--bench", "", true},
-    OptionSpec{OptionAction::ManifestPath, "--manifest-path", "", true},
-    OptionSpec{OptionAction::TargetDir, "--target-dir", "", true},
-    OptionSpec{OptionAction::Jobs, "--jobs", "-j", true},
-    OptionSpec{OptionAction::Profile, "--profile", "", true},
-    OptionSpec{OptionAction::Color, "--color", "", true},
-};
-
-constexpr std::array kCheckUnsupportedOptions{
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
-    UnsupportedOptionSpec{"--lib"},
-    UnsupportedOptionSpec{"--target", true},
-    UnsupportedOptionSpec{"--message-format", true},
-    UnsupportedOptionSpec{"--timings"},
-    UnsupportedOptionSpec{"--ignore-rust-version"},
-    UnsupportedOptionSpec{"--config", true},
-    UnsupportedOptionSpec{"-C"},
-    UnsupportedOptionSpec{"-Z"},
-    UnsupportedOptionSpec{"--future-incompat-report"},
-};
-
-constexpr std::array kRunOptions{
-    OptionSpec{OptionAction::Release, "--release", "-r"},
-    OptionSpec{OptionAction::Help, "--help", "-h"},
-    OptionSpec{OptionAction::Bin, "--bin", "", true},
-    OptionSpec{OptionAction::Example, "--example", "", true},
-};
-
-constexpr std::array kRunUnsupportedOptions{
-    UnsupportedOptionSpec{"-v"},
-    UnsupportedOptionSpec{"-vv"},
-    UnsupportedOptionSpec{"--verbose"},
-    UnsupportedOptionSpec{"--locked"},
-    UnsupportedOptionSpec{"--offline"},
-    UnsupportedOptionSpec{"--frozen"},
-    UnsupportedOptionSpec{"--manifest-path", true},
-    UnsupportedOptionSpec{"--target-dir", true},
-    UnsupportedOptionSpec{"-j"},
-    UnsupportedOptionSpec{"--jobs", true},
-    UnsupportedOptionSpec{"--profile", true},
-    UnsupportedOptionSpec{"--color", true},
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
-    UnsupportedOptionSpec{"--target", true},
-    UnsupportedOptionSpec{"--message-format", true},
-    UnsupportedOptionSpec{"--ignore-rust-version"},
-    UnsupportedOptionSpec{"--config", true},
-    UnsupportedOptionSpec{"-C"},
-    UnsupportedOptionSpec{"-Z"},
-    UnsupportedOptionSpec{"--future-incompat-report"},
-};
-
-constexpr std::array kTestOptions{
-    OptionSpec{OptionAction::Release, "--release", "-r"},
-    OptionSpec{OptionAction::Help, "--help", "-h"},
-    OptionSpec{OptionAction::Verbose, "--verbose", "-v"},
-    OptionSpec{OptionAction::VerboseDouble, "-vv"},
-    OptionSpec{OptionAction::NoRun, "--no-run"},
-    OptionSpec{OptionAction::NoFailFast, "--no-fail-fast"},
-    OptionSpec{OptionAction::Unit, "--unit"},
-    OptionSpec{OptionAction::Integration, "--integration"},
-    OptionSpec{OptionAction::TestsAll, "--tests"},
-    OptionSpec{OptionAction::ExamplesAll, "--examples"},
-    OptionSpec{OptionAction::BenchesAll, "--benches"},
-    OptionSpec{OptionAction::AllTargets, "--all-targets"},
-    OptionSpec{OptionAction::Locked, "--locked"},
-    OptionSpec{OptionAction::Offline, "--offline"},
-    OptionSpec{OptionAction::Frozen, "--frozen"},
-    OptionSpec{OptionAction::Test, "--test", "", true},
-    OptionSpec{OptionAction::Example, "--example", "", true},
-    OptionSpec{OptionAction::Bench, "--bench", "", true},
-    OptionSpec{OptionAction::ManifestPath, "--manifest-path", "", true},
-    OptionSpec{OptionAction::TargetDir, "--target-dir", "", true},
-    OptionSpec{OptionAction::Jobs, "--jobs", "-j", true},
-    OptionSpec{OptionAction::Profile, "--profile", "", true},
-    OptionSpec{OptionAction::Color, "--color", "", true},
-};
-
-constexpr std::array kTestUnsupportedOptions{
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
-    UnsupportedOptionSpec{"--lib"},
-    UnsupportedOptionSpec{"--bin"},
-    UnsupportedOptionSpec{"--bins"},
-    UnsupportedOptionSpec{"--doc"},
-    UnsupportedOptionSpec{"--target", true},
-    UnsupportedOptionSpec{"--message-format", true},
-    UnsupportedOptionSpec{"--ignore-rust-version"},
-    UnsupportedOptionSpec{"--config", true},
-    UnsupportedOptionSpec{"-C"},
-    UnsupportedOptionSpec{"-Z"},
-    UnsupportedOptionSpec{"--future-incompat-report"},
-};
-
-const CommandSpec kBuildCommandSpec{"build",
-                                    "argo build [options]",
-                                    cli::HelpTopic::Build,
-                                    std::span{kBuildOptions},
-                                    std::span{kBuildUnsupportedOptions},
-                                    false,
-                                    false};
-
-const CommandSpec kCheckCommandSpec{"check",
-                                    "argo check [options]",
-                                    cli::HelpTopic::Check,
-                                    std::span{kCheckOptions},
-                                    std::span{kCheckUnsupportedOptions},
-                                    false,
-                                    true};
-
-const CommandSpec kRunCommandSpec{"run",
-                                  "argo run [--release] [--bin <NAME> | "
-                                  "--example <NAME>]",
-                                  cli::HelpTopic::Run,
-                                  std::span{kRunOptions},
-                                  std::span{kRunUnsupportedOptions},
-                                  false,
-                                  false};
-
-const CommandSpec kTestCommandSpec{"test",
-                                   "argo test [options] [testname] "
-                                   "[-- test-options]",
-                                   cli::HelpTopic::Test,
-                                   std::span{kTestOptions},
-                                   std::span{kTestUnsupportedOptions},
-                                   true,
-                                   false};
 
 auto has_inline_option_value(std::string_view token, std::string_view option)
     -> bool {
@@ -1187,50 +930,50 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
         return std::move(result.value());
     };
 
-    if (cmd == "init"sv) {
+    if (catalog::matches(cmd, HelpTopic::Init)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Init});
         }
         return make_command(InitCommand{});
     }
 
-    if (cmd == "new"sv) {
+    if (catalog::matches(cmd, HelpTopic::New)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::New});
         }
         const auto path = first_non_quiet_token(command_args);
         if (!path.has_value()) {
-            return util::make_unexpected(
-                format_missing_required_args("<PATH>", "argo new <PATH>"));
+            return util::make_unexpected(format_missing_required_args(
+                "<PATH>", catalog::usage_line(HelpTopic::New)));
         }
         return make_command(NewCommand{.name = std::string(*path)});
     }
 
-    if (cmd == "add"sv) {
+    if (catalog::matches(cmd, HelpTopic::Add)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Add});
         }
         const auto dependency = first_non_quiet_token(command_args);
         if (!dependency.has_value()) {
             return util::make_unexpected(format_missing_required_args(
-                "<DEP_SPEC>", "argo add <DEP_SPEC>"));
+                "<DEP_SPEC>", catalog::usage_line(HelpTopic::Add)));
         }
         return make_command(AddCommand{.package = std::string(*dependency)});
     }
 
-    if (cmd == "remove"sv) {
+    if (catalog::matches(cmd, HelpTopic::Remove)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Remove});
         }
         const auto dependency = first_non_quiet_token(command_args);
         if (!dependency.has_value()) {
-            return util::make_unexpected(
-                format_missing_required_args("<DEP>", "argo remove <DEP>"));
+            return util::make_unexpected(format_missing_required_args(
+                "<DEP>", catalog::usage_line(HelpTopic::Remove)));
         }
         return make_command(RemoveCommand{.package = std::string(*dependency)});
     }
 
-    if (cmd == "update"sv) {
+    if (catalog::matches(cmd, HelpTopic::Update)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Update});
         }
@@ -1242,26 +985,26 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
         return make_command(UpdateCommand{});
     }
 
-    if (cmd == "fetch"sv) {
+    if (catalog::matches(cmd, HelpTopic::Fetch)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Fetch});
         }
         return make_command(FetchCommand{});
     }
 
-    if (cmd == "publish"sv) {
+    if (catalog::matches(cmd, HelpTopic::Publish)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Publish});
         }
         return make_command(PublishCommand{});
     }
 
-    if (cmd == "yank"sv) {
+    if (catalog::matches(cmd, HelpTopic::Yank)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Yank});
         }
         auto version = require_option_value(
-            command_args, "--vers", "argo yank --vers <VERSION> [--undo]");
+            command_args, "--vers", catalog::usage_line(HelpTopic::Yank));
         if (!version) {
             return std::unexpected(std::move(version.error()));
         }
@@ -1269,7 +1012,7 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
             .version = *version, .undo = has_flag(command_args, "--undo"sv)});
     }
 
-    if (cmd == "owner"sv) {
+    if (catalog::matches(cmd, HelpTopic::Owner)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Owner});
         }
@@ -1286,7 +1029,7 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
         return make_command(std::move(owner));
     }
 
-    if (cmd == "login"sv) {
+    if (catalog::matches(cmd, HelpTopic::Login)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Login});
         }
@@ -1302,7 +1045,7 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
         return make_command(std::move(login));
     }
 
-    if (cmd == "logout"sv) {
+    if (catalog::matches(cmd, HelpTopic::Logout)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Logout});
         }
@@ -1311,48 +1054,48 @@ auto parse(std::span<char*> args) -> util::Result<ParsedCommand> {
                 find_option_value(command_args, "--registry").value_or("")});
     }
 
-    if (cmd == "vcpkg"sv) {
+    if (catalog::matches(cmd, HelpTopic::Vcpkg)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Vcpkg});
         }
         return make_command(VcpkgCommand{});
     }
 
-    if (cmd == "ppargo"sv) {
+    if (catalog::matches(cmd, HelpTopic::Ppargo)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Ppargo});
         }
         return make_command(PpargoCommand{});
     }
 
-    if (cmd == "build"sv || cmd == "b"sv) {
+    if (catalog::matches(cmd, cli::HelpTopic::Build)) {
         return parse_build_like_command<cli::BuildCommand>(
-            command_args, kBuildCommandSpec, global);
+            command_args, *catalog::build_like_spec(HelpTopic::Build), global);
     }
 
-    if (cmd == "check"sv || cmd == "c"sv) {
+    if (catalog::matches(cmd, cli::HelpTopic::Check)) {
         return parse_build_like_command<cli::CheckCommand>(
-            command_args, kCheckCommandSpec, global);
+            command_args, *catalog::build_like_spec(HelpTopic::Check), global);
     }
 
-    if (cmd == "run"sv || cmd == "r"sv) {
+    if (catalog::matches(cmd, cli::HelpTopic::Run)) {
         return parse_build_like_command<cli::RunCommand>(
-            command_args, kRunCommandSpec, global);
+            command_args, *catalog::build_like_spec(HelpTopic::Run), global);
     }
 
-    if (cmd == "test"sv || cmd == "t"sv) {
+    if (catalog::matches(cmd, cli::HelpTopic::Test)) {
         return parse_build_like_command<cli::TestCommand>(
-            command_args, kTestCommandSpec, global);
+            command_args, *catalog::build_like_spec(HelpTopic::Test), global);
     }
 
-    if (cmd == "version"sv) {
+    if (catalog::matches(cmd, HelpTopic::Version)) {
         if (has_help_flag(command_args)) {
             return make_command(HelpCommand{.topic = HelpTopic::Version});
         }
         return apply_result(parse_version_command(command_args));
     }
 
-    if (cmd == "help"sv) {
+    if (catalog::matches(cmd, HelpTopic::Help)) {
         return apply_result(parse_help_command(command_args));
     }
 

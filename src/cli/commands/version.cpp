@@ -1,5 +1,3 @@
-#include "cli/commands/commands.hpp"
-
 #include <array>
 #include <filesystem>
 #include <optional>
@@ -7,7 +5,7 @@
 #include <string_view>
 
 #include "build/compile_jobs.hpp"
-#include "cli/help.hpp"
+#include "cli/commands/commands.hpp"
 #include "core/manifest.hpp"
 #include "core/paths.hpp"
 #include "core/system.hpp"
@@ -200,11 +198,6 @@ auto VersionCommand::execute() const -> util::Status {
         util::output::line(util::output::Stream::Stdout,
                            std::format("os: {}", core::os_description()));
     }
-    return util::Ok;
-}
-
-auto HelpCommand::execute() const -> util::Status {
-    util::output::write_help_text(help_text(topic));
     return util::Ok;
 }
 
