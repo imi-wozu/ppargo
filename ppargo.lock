@@ -1,0 +1,9 @@
+version = 2
+
+[metadata]
+manifest_fingerprint = "86b64508c02012e0"
+package_manager = "vcpkg"
+module_mode_enabled = false
+compiler = "clang++"
+scan_deps_fingerprint = "8f3628844de7ddce"
+

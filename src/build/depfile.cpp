@@ -1,14 +1,15 @@
-﻿#include "build/depfile.hpp"
+#include "build/depfile.hpp"
 
 #include <cctype>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 
 namespace {
 
-auto collapse_continuations(const std::string& content) -> std::string {
+auto collapse_continuations(std::string_view  content) -> std::string {
     std::string normalized;
     normalized.reserve(content.size());
 
@@ -33,7 +34,7 @@ auto collapse_continuations(const std::string& content) -> std::string {
     return normalized;
 }
 
-auto find_rule_separator(const std::string& content) -> std::size_t {
+auto find_rule_separator(std::string_view  content) -> std::size_t {
     bool escaped = false;
     for (std::size_t i = 0; i < content.size(); ++i) {
         const char c = content[i];
@@ -60,7 +61,7 @@ auto find_rule_separator(const std::string& content) -> std::size_t {
     return std::string::npos;
 }
 
-auto parse_tokens(const std::string& deps_part) -> std::vector<std::string> {
+auto parse_tokens(std::string_view  deps_part) -> std::vector<std::string> {
     std::vector<std::string> tokens;
     std::string current;
 
@@ -108,8 +109,8 @@ auto parse_dependencies(const std::filesystem::path& dep_file)
     -> util::Result<std::vector<std::filesystem::path>> {
     std::ifstream input(dep_file, std::ios::binary);
     if (!input.is_open()) {
-        return std::unexpected("Build Error: Failed to open depfile: " +
-                               dep_file.string());
+        return std::unexpected(util::make_error("Failed to open depfile: " +
+                               dep_file.string()));
     }
 
     std::stringstream buffer;
@@ -117,15 +118,15 @@ auto parse_dependencies(const std::filesystem::path& dep_file)
     const std::string normalized = collapse_continuations(buffer.str());
     const std::size_t separator = find_rule_separator(normalized);
     if (separator == std::string::npos) {
-        return std::unexpected("Build Error: Invalid depfile format: " +
-                               dep_file.string());
+        return std::unexpected(util::make_error("Invalid depfile format: " +
+                               dep_file.string()));
     }
 
     const std::string deps_part = normalized.substr(separator + 1);
     const auto tokens = parse_tokens(deps_part);
     if (tokens.empty()) {
-        return std::unexpected("Build Error: No dependencies found in depfile: " +
-                               dep_file.string());
+        return std::unexpected(util::make_error("No dependencies found in depfile: " +
+                               dep_file.string()));
     }
 
     std::vector<std::filesystem::path> dependencies;
@@ -137,13 +138,12 @@ auto parse_dependencies(const std::filesystem::path& dep_file)
         dependencies.emplace_back(token);
     }
     if (dependencies.empty()) {
-        return std::unexpected("Build Error: No valid dependencies found in depfile: " +
-                               dep_file.string());
+        return std::unexpected(util::make_error("No valid dependencies found in depfile: " +
+                               dep_file.string()));
     }
 
     return dependencies;
 }
 
 }  // namespace build::depfile
-
 

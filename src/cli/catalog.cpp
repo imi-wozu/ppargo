@@ -194,14 +194,26 @@ constexpr std::string_view kCheckHelpText =
 
 constexpr std::string_view kRunHelpText =
     "Build and run a local binary or example target.\n\n"
-    "Usage: argo run [--release] [--bin <name> | --example <name>]\n\n"
+    "Usage: argo run [options] [-- args]\n\n"
     "Target Selection:\n"
     "  --bin <name>            Run the specified binary target\n"
     "  --example <name>        Run the specified example target\n\n"
     "Compilation Options:\n"
     "  -r, --release           Build with the release profile\n\n"
+    "  --profile <dev|release> Select the build profile\n"
+    "  -j, --jobs <N>          Override parallel job count for this "
+    "invocation\n"
+    "  --target-dir <dir>      Override the artifact output directory\n\n"
+    "Dependency Workflow:\n"
+    "  --locked                Require an existing up-to-date ppargo.lock\n"
+    "  --offline               Use only already available local dependency "
+    "state\n"
+    "  --frozen                Equivalent to --locked --offline\n\n"
     "Display Options:\n"
-    "  -q, --quiet             Do not print cargo log messages\n"
+    "  -v, -vv, --verbose      Increase run output detail\n"
+    "  -q, --quiet             Suppress normal run output\n"
+    "  --color <when>          Control color output (auto, always, never)\n"
+    "  --manifest-path <path>  Use the specified ppargo.toml\n"
     "  -h, --help              Print this help\n";
 
 constexpr std::string_view kTestHelpText =
@@ -264,6 +276,13 @@ constexpr std::array kBuildOptions{
     OptionSpec{OptionAction::ExamplesAll, "--examples"},
     OptionSpec{OptionAction::TestsAll, "--tests"},
     OptionSpec{OptionAction::AllTargets, "--all-targets"},
+    OptionSpec{OptionAction::Package, "--package", "-p", true},
+    OptionSpec{OptionAction::Workspace, "--workspace"},
+    OptionSpec{OptionAction::AllPackages, "--all"},
+    OptionSpec{OptionAction::Exclude, "--exclude", "", true},
+    OptionSpec{OptionAction::Features, "--features", "-F", true},
+    OptionSpec{OptionAction::AllFeatures, "--all-features"},
+    OptionSpec{OptionAction::NoDefaultFeatures, "--no-default-features"},
     OptionSpec{OptionAction::Locked, "--locked"},
     OptionSpec{OptionAction::Offline, "--offline"},
     OptionSpec{OptionAction::Frozen, "--frozen"},
@@ -278,15 +297,6 @@ constexpr std::array kBuildOptions{
 };
 
 constexpr std::array kBuildUnsupportedOptions{
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
     UnsupportedOptionSpec{"--lib"},
     UnsupportedOptionSpec{"--bench", true},
     UnsupportedOptionSpec{"--benches"},
@@ -311,6 +321,13 @@ constexpr std::array kCheckOptions{
     OptionSpec{OptionAction::TestsAll, "--tests"},
     OptionSpec{OptionAction::BenchesAll, "--benches"},
     OptionSpec{OptionAction::AllTargets, "--all-targets"},
+    OptionSpec{OptionAction::Package, "--package", "-p", true},
+    OptionSpec{OptionAction::Workspace, "--workspace"},
+    OptionSpec{OptionAction::AllPackages, "--all"},
+    OptionSpec{OptionAction::Exclude, "--exclude", "", true},
+    OptionSpec{OptionAction::Features, "--features", "-F", true},
+    OptionSpec{OptionAction::AllFeatures, "--all-features"},
+    OptionSpec{OptionAction::NoDefaultFeatures, "--no-default-features"},
     OptionSpec{OptionAction::Locked, "--locked"},
     OptionSpec{OptionAction::Offline, "--offline"},
     OptionSpec{OptionAction::Frozen, "--frozen"},
@@ -327,15 +344,6 @@ constexpr std::array kCheckOptions{
 };
 
 constexpr std::array kCheckUnsupportedOptions{
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
     UnsupportedOptionSpec{"--lib"},
     UnsupportedOptionSpec{"--target", true},
     UnsupportedOptionSpec{"--message-format", true},
@@ -350,32 +358,28 @@ constexpr std::array kCheckUnsupportedOptions{
 constexpr std::array kRunOptions{
     OptionSpec{OptionAction::Release, "--release", "-r"},
     OptionSpec{OptionAction::Help, "--help", "-h"},
+    OptionSpec{OptionAction::Verbose, "--verbose", "-v"},
+    OptionSpec{OptionAction::VerboseDouble, "-vv"},
+    OptionSpec{OptionAction::Locked, "--locked"},
+    OptionSpec{OptionAction::Offline, "--offline"},
+    OptionSpec{OptionAction::Frozen, "--frozen"},
     OptionSpec{OptionAction::Bin, "--bin", "", true},
     OptionSpec{OptionAction::Example, "--example", "", true},
+    OptionSpec{OptionAction::Package, "--package", "-p", true},
+    OptionSpec{OptionAction::Workspace, "--workspace"},
+    OptionSpec{OptionAction::AllPackages, "--all"},
+    OptionSpec{OptionAction::Exclude, "--exclude", "", true},
+    OptionSpec{OptionAction::Features, "--features", "-F", true},
+    OptionSpec{OptionAction::AllFeatures, "--all-features"},
+    OptionSpec{OptionAction::NoDefaultFeatures, "--no-default-features"},
+    OptionSpec{OptionAction::ManifestPath, "--manifest-path", "", true},
+    OptionSpec{OptionAction::TargetDir, "--target-dir", "", true},
+    OptionSpec{OptionAction::Jobs, "--jobs", "-j", true},
+    OptionSpec{OptionAction::Profile, "--profile", "", true},
+    OptionSpec{OptionAction::Color, "--color", "", true},
 };
 
 constexpr std::array kRunUnsupportedOptions{
-    UnsupportedOptionSpec{"-v"},
-    UnsupportedOptionSpec{"-vv"},
-    UnsupportedOptionSpec{"--verbose"},
-    UnsupportedOptionSpec{"--locked"},
-    UnsupportedOptionSpec{"--offline"},
-    UnsupportedOptionSpec{"--frozen"},
-    UnsupportedOptionSpec{"--manifest-path", true},
-    UnsupportedOptionSpec{"--target-dir", true},
-    UnsupportedOptionSpec{"-j"},
-    UnsupportedOptionSpec{"--jobs", true},
-    UnsupportedOptionSpec{"--profile", true},
-    UnsupportedOptionSpec{"--color", true},
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
     UnsupportedOptionSpec{"--target", true},
     UnsupportedOptionSpec{"--message-format", true},
     UnsupportedOptionSpec{"--ignore-rust-version"},
@@ -398,6 +402,13 @@ constexpr std::array kTestOptions{
     OptionSpec{OptionAction::ExamplesAll, "--examples"},
     OptionSpec{OptionAction::BenchesAll, "--benches"},
     OptionSpec{OptionAction::AllTargets, "--all-targets"},
+    OptionSpec{OptionAction::Package, "--package", "-p", true},
+    OptionSpec{OptionAction::Workspace, "--workspace"},
+    OptionSpec{OptionAction::AllPackages, "--all"},
+    OptionSpec{OptionAction::Exclude, "--exclude", "", true},
+    OptionSpec{OptionAction::Features, "--features", "-F", true},
+    OptionSpec{OptionAction::AllFeatures, "--all-features"},
+    OptionSpec{OptionAction::NoDefaultFeatures, "--no-default-features"},
     OptionSpec{OptionAction::Locked, "--locked"},
     OptionSpec{OptionAction::Offline, "--offline"},
     OptionSpec{OptionAction::Frozen, "--frozen"},
@@ -412,15 +423,6 @@ constexpr std::array kTestOptions{
 };
 
 constexpr std::array kTestUnsupportedOptions{
-    UnsupportedOptionSpec{"-p"},
-    UnsupportedOptionSpec{"--package", true},
-    UnsupportedOptionSpec{"--workspace"},
-    UnsupportedOptionSpec{"--all"},
-    UnsupportedOptionSpec{"--exclude", true},
-    UnsupportedOptionSpec{"-F"},
-    UnsupportedOptionSpec{"--features", true},
-    UnsupportedOptionSpec{"--all-features"},
-    UnsupportedOptionSpec{"--no-default-features"},
     UnsupportedOptionSpec{"--lib"},
     UnsupportedOptionSpec{"--bin"},
     UnsupportedOptionSpec{"--bins"},
@@ -454,11 +456,11 @@ constexpr BuildLikeCommandSpec kCheckCommandSpec{
 
 constexpr BuildLikeCommandSpec kRunCommandSpec{
     "run",
-    "argo run [--release] [--bin <NAME> | --example <NAME>]",
+    "argo run [options] [-- args]",
     HelpTopic::Run,
     std::span{kRunOptions},
     std::span{kRunUnsupportedOptions},
-    false,
+    true,
     false};
 
 constexpr BuildLikeCommandSpec kTestCommandSpec{
@@ -494,7 +496,8 @@ constexpr std::array kMetadata{
                     &kCheckCommandSpec, true},
     CommandMetadata{HelpTopic::Run, "run"sv, kRunAliases, "run, r"sv,
                     "Run a binary or example of the local package",
-                    kRunCommandSpec.usage_line, kRunHelpText, &kRunCommandSpec},
+                    kRunCommandSpec.usage_line, kRunHelpText, &kRunCommandSpec,
+                    true},
     CommandMetadata{HelpTopic::Test, "test"sv, kTestAliases, "test, t"sv,
                     "Run the tests", kTestCommandSpec.usage_line, kTestHelpText,
                     &kTestCommandSpec, true},

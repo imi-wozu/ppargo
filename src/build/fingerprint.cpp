@@ -5,7 +5,6 @@
 
 #include "build/depfile.hpp"
 
-
 namespace {
 
 auto exists_file(const std::filesystem::path& path) -> bool {
@@ -13,7 +12,8 @@ auto exists_file(const std::filesystem::path& path) -> bool {
     return std::filesystem::exists(path, ec) && !ec;
 }
 
-auto read_time(const std::filesystem::path& path) -> std::optional<std::filesystem::file_time_type> {
+auto read_time(const std::filesystem::path& path)
+    -> std::optional<std::filesystem::file_time_type> {
     std::error_code ec;
     const auto time = std::filesystem::last_write_time(path, ec);
     if (ec) {
@@ -22,19 +22,21 @@ auto read_time(const std::filesystem::path& path) -> std::optional<std::filesyst
     return time;
 }
 
-auto resolve_dependency_path(const std::filesystem::path& source_root, const std::filesystem::path& source,
-                             const std::filesystem::path& dep_file, const std::filesystem::path& dependency)
+auto resolve_dependency_path(const std::filesystem::path& source_root,
+                             const std::filesystem::path& source,
+                             const std::filesystem::path& dep_file,
+                             const std::filesystem::path& dependency)
     -> std::optional<std::filesystem::path> {
     if (dependency.is_absolute()) {
-        return exists_file(dependency) ? std::optional<std::filesystem::path>(dependency)
-                                       : std::nullopt;
+        return exists_file(dependency)
+                   ? std::optional<std::filesystem::path>(dependency)
+                   : std::nullopt;
     }
 
     const std::filesystem::path project_root = source_root.parent_path();
-    const std::vector<std::filesystem::path> candidates = {source.parent_path() / dependency,
-                                              project_root / dependency,
-                                              dep_file.parent_path() / dependency,
-                                              dependency};
+    const std::vector<std::filesystem::path> candidates = {
+        source.parent_path() / dependency, project_root / dependency,
+        dep_file.parent_path() / dependency, dependency};
     for (const auto& candidate : candidates) {
         if (exists_file(candidate)) {
             return candidate;
@@ -67,8 +69,10 @@ auto to_string(RebuildReason reason) -> const char* {
     return "Unknown";
 }
 
-auto evaluate_rebuild(const std::filesystem::path& source_root, const std::filesystem::path& source,
-                      const std::filesystem::path& object_file, const std::filesystem::path& dep_file)
+auto evaluate_rebuild(const std::filesystem::path& source_root,
+                      const std::filesystem::path& source,
+                      const std::filesystem::path& object_file,
+                      const std::filesystem::path& dep_file)
     -> RebuildDecision {
     if (!exists_file(object_file)) {
         return {.reason = RebuildReason::MissingObject, .dependency = {}};
@@ -92,9 +96,11 @@ auto evaluate_rebuild(const std::filesystem::path& source_root, const std::files
     }
 
     for (const auto& dep : *dependencies) {
-        auto resolved = resolve_dependency_path(source_root, source, dep_file, dep);
+        auto resolved =
+            resolve_dependency_path(source_root, source, dep_file, dep);
         if (!resolved.has_value()) {
-            return {.reason = RebuildReason::DependencyMissing, .dependency = dep};
+            return {.reason = RebuildReason::DependencyMissing,
+                    .dependency = dep};
         }
 
         const auto dep_time = read_time(*resolved);
@@ -108,5 +114,3 @@ auto evaluate_rebuild(const std::filesystem::path& source_root, const std::files
 }
 
 }  // namespace build::fingerprint
-
-

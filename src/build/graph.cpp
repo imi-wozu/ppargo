@@ -1,11 +1,11 @@
-﻿#include "build/graph.hpp"
+#include "build/graph.hpp"
 
-#include <regex>
-
+#include <span>
+#include <string>
 
 namespace build::graph {
 
-auto glob_to_regex(const std::string& pattern) -> std::string {
+auto glob_to_regex(std::string_view  pattern) -> std::string {
     std::string regex = "^";
     for (std::size_t i = 0; i < pattern.size(); ++i) {
         const char ch = pattern[i];
@@ -33,7 +33,7 @@ auto glob_to_regex(const std::string& pattern) -> std::string {
     return regex;
 }
 
-auto compile_excludes(const std::vector<std::string>& patterns) -> CompiledExcludes {
+auto compile_excludes(std::span<const std::string>  patterns) -> CompiledExcludes {
     CompiledExcludes compiled;
     compiled.reserve(patterns.size());
     for (const auto& pattern : patterns) {
@@ -42,18 +42,18 @@ auto compile_excludes(const std::vector<std::string>& patterns) -> CompiledExclu
     return compiled;
 }
 
-auto matches_excludes(const std::string& relative_path,
+auto matches_excludes(std::string_view  relative_path,
                       const CompiledExcludes& compiled_patterns) -> bool {
     for (const auto& pattern : compiled_patterns) {
-        if (std::regex_match(relative_path, pattern)) {
+        if (std::regex_match(std::string(relative_path), pattern)) {
             return true;
         }
     }
     return false;
 }
 
-auto matches_excludes(const std::string& relative_path,
-                      const std::vector<std::string>& patterns) -> bool {
+auto matches_excludes(std::string_view  relative_path,
+                      std::span<const std::string>  patterns) -> bool {
     const auto compiled = compile_excludes(patterns);
     return matches_excludes(relative_path, compiled);
 }
@@ -63,15 +63,15 @@ auto object_path_for_source(
     const std::filesystem::path& source_file)
     -> util::Result<std::filesystem::path> {
     if (source_root.empty() || obj_root.empty()) {
-        return std::unexpected("Source root and object root must be set.");
+        return std::unexpected(util::make_error("Source root and object root must be set."));
     }
 
     std::error_code ec;
     std::filesystem::path rel =
         std::filesystem::relative(source_file, source_root, ec);
     if (ec) {
-        return std::unexpected("Build Error: Failed to map source path to object path: " +
-                               source_file.string());
+        return std::unexpected(util::make_error("Failed to map source path to object path: " +
+                               source_file.string()));
     }
     std::filesystem::path obj = obj_root / rel;
     obj.replace_extension(".o");
@@ -79,6 +79,4 @@ auto object_path_for_source(
 }
 
 }  // namespace build::graph
-
-
 

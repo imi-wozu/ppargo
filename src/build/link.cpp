@@ -1,21 +1,12 @@
-﻿#include "build/link.hpp"
+#include "build/link.hpp"
 
-#include <filesystem>
 #include <fstream>
 #include <optional>
-#include <string>
-#include <system_error>
-
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+#include <span>
+#include <vector>
 
 #include "build/process_bridge.hpp"
-#include "core/paths.hpp"
-
+#include "core/system.hpp"
 
 namespace {
 
@@ -35,33 +26,13 @@ auto should_copy(const std::filesystem::path& src, const std::filesystem::path& 
     return src_time > dest_time;
 }
 
-#ifdef _WIN32
-auto current_executable_path() {
-    std::vector<char> buffer(MAX_PATH);
-    DWORD size =
-        GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (size == 0) {
-        return std::optional<std::filesystem::path>{};
-    }
-    while (size == buffer.size()) {
-        buffer.resize(buffer.size() * 2);
-        size =
-            GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-        if (size == 0) {
-            return std::optional<std::filesystem::path>{};
-        }
-    }
-    return std::optional<std::filesystem::path>{std::filesystem::path(std::string(buffer.data(), size))};
-}
-#endif
-
 }  // namespace
 
 namespace build::link {
 
 auto ensure_not_running_target(const std::filesystem::path& output) -> util::Status {
 #ifdef _WIN32
-    if (const auto exe = current_executable_path(); exe.has_value()) {
+    if (const auto exe = core::current_executable_path(); exe.has_value()) {
         std::error_code ec;
         const auto current = std::filesystem::weakly_canonical(*exe, ec);
         if (ec) {
@@ -72,9 +43,9 @@ auto ensure_not_running_target(const std::filesystem::path& output) -> util::Sta
             return util::Ok;
         }
         if (!current.empty() && current == target) {
-            return std::unexpected(
-                "Build Error: Cannot overwrite currently running executable on Windows. "
-                "Build the other profile (debug/release) instead.");
+            return std::unexpected(util::make_error(
+                "Cannot overwrite currently running executable on Windows. "
+                "Build the other profile (debug/release) instead."));
         }
     }
 #else
@@ -83,16 +54,18 @@ auto ensure_not_running_target(const std::filesystem::path& output) -> util::Sta
     return util::Ok;
 }
 
-auto link_binary(const compile::CompilerConfig& config,
-                 const std::vector<std::filesystem::path>& object_files, const std::filesystem::path& output,
-                 const std::vector<std::filesystem::path>& library_paths,
-                 const std::vector<std::string>& libraries,
-                 bool release) -> util::Status {
+auto link_binary_result(const compile::CompilerConfig& config,
+                        std::span<const std::filesystem::path>  object_files,
+                        const std::filesystem::path& output,
+                        std::span<const std::filesystem::path>  library_paths,
+                        std::span<const std::string>  libraries, bool release,
+                        const std::atomic_bool* cancel_requested)
+    -> util::Result<LinkExecutionResult> {
     const std::filesystem::path rsp_file = output.parent_path() / "link_objects.rsp";
     std::ofstream rsp(rsp_file, std::ios::trunc);
     if (!rsp.is_open()) {
         return std::unexpected(
-            "I/O Error: Failed to create linker response file.");
+            util::make_error("Failed to create linker response file."));
     }
     for (const auto& object_file : object_files) {
         rsp << "\"" << object_file.generic_string() << "\"\n";
@@ -108,6 +81,8 @@ auto link_binary(const compile::CompilerConfig& config,
     args.push_back("/nodefaultlib:libcmt");
     args.push_back("-Xlinker");
     args.push_back("/nodefaultlib:libcmtd");
+    args.push_back("-Xlinker");
+    args.push_back("/subsystem:console");
 #endif
     args.push_back("@" + rsp_file.generic_string());
     args.push_back("-o");
@@ -125,54 +100,48 @@ auto link_binary(const compile::CompilerConfig& config,
 #endif
     }
 
-    auto rc = build::process_bridge::run(config.compiler, args);
-    if (!rc) {
-        return std::unexpected(rc.error());
+    auto run = build::process_bridge::run(config.compiler, args, cancel_requested);
+    if (!run) {
+        return std::unexpected(run.error());
     }
     std::error_code ec;
     std::filesystem::remove(rsp_file, ec);
-    if (*rc != 0) {
-        return std::unexpected("Build Error: Linking failed for output: " +
-                               output.string());
-    }
-    return util::Ok;
+    return LinkExecutionResult{
+        .exit_code = run->exit_code,
+        .output = std::move(run->output),
+        .canceled = run->canceled,
+    };
 }
 
-auto copy_runtime_dlls(const std::filesystem::path& root, const std::filesystem::path& build_dir)
-    -> util::Status {
+auto copy_runtime_dlls(std::span<const std::filesystem::path> runtime_files,
+                       const std::filesystem::path& build_dir) -> util::Status {
 #ifdef _WIN32
-    const std::filesystem::path vcpkg_bin = root / "packages" / core::detect_triplet() / "bin";
     std::error_code ec;
-    if (!std::filesystem::exists(vcpkg_bin, ec) || ec) {
-        return util::Ok;
-    }
-
-    for (std::filesystem::directory_iterator it(vcpkg_bin, ec), end; it != end; it.increment(ec)) {
-        if (ec) {
-            return std::unexpected("I/O Error: Failed to enumerate runtime DLL directory: " +
-                                   vcpkg_bin.string());
-        }
-        if (!it->is_regular_file(ec)) {
+    for (const auto& runtime_file : runtime_files) {
+        if (!std::filesystem::exists(runtime_file, ec) || ec) {
             if (ec) {
-                return std::unexpected("I/O Error: Failed to inspect runtime DLL entry: " +
-                                       it->path().string());
+                return std::unexpected(util::make_error(
+                    "Failed to inspect runtime DLL: " + runtime_file.string() +
+                    " (" + ec.message() + ")"));
             }
             continue;
         }
-        if (it->path().extension() != ".dll") {
+        if (runtime_file.extension() != ".dll") {
             continue;
         }
-        const std::filesystem::path dest = build_dir / it->path().filename();
-        if (should_copy(it->path(), dest)) {
-            std::filesystem::copy_file(it->path(), dest, std::filesystem::copy_options::overwrite_existing, ec);
+        const std::filesystem::path dest = build_dir / runtime_file.filename();
+        if (should_copy(runtime_file, dest)) {
+            std::filesystem::copy_file(
+                runtime_file, dest,
+                std::filesystem::copy_options::overwrite_existing, ec);
             if (ec) {
-                return std::unexpected("I/O Error: Failed to copy runtime DLL: " +
-                                       it->path().string());
+                return std::unexpected(util::make_error(
+                    "Failed to copy runtime DLL: " + runtime_file.string()));
             }
         }
     }
 #else
-    (void)root;
+    (void)runtime_files;
     (void)build_dir;
 #endif
     return util::Ok;

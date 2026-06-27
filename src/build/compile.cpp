@@ -1,153 +1,369 @@
-﻿#include "build/compile.hpp"
+#include "build/compile.hpp"
 
 #include <algorithm>
 #include <atomic>
-#include <climits>
-#include <cstdlib>
+#include <cctype>
+#include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <functional>
+#include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
-#include <format>
+#include <ranges>
+#include <set>
 #include <sstream>
 #include <string>
-#include <thread>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
+#include <span>
 
+#include "build/action_graph.hpp"
+#include "build/action_scheduler.hpp"
+#include "build/check_batches.hpp"
+#include "build/compile_cache.hpp"
+#include "build/compile_jobs.hpp"
+#include "build/compile_pch.hpp"
+#include "build/compile_profile.hpp"
+#include "build/compile_progress.hpp"
+#include "build/depscan.hpp"
 #include "build/fingerprint.hpp"
 #include "build/graph.hpp"
 #include "build/process_bridge.hpp"
-#include "core/paths.hpp"
+#include "build/scheduler.hpp"
+#include "util/environment.hpp"
 #include "util/fs.hpp"
 #include "util/output.hpp"
 
-
 namespace {
 
-struct CheckCacheEntry {
-    long long mtime = 0;
-    std::uintmax_t size = 0;
+constexpr std::uint32_t kDefaultCompilePeakMb = 192;
+constexpr std::uint32_t kDefaultCheckPeakMb = 256;
+
+struct TimedSample {
+    std::string key;
+    double elapsed_ms = 0.0;
+    std::optional<double> peak_mb;
+    double startup_ms = 0.0;
 };
 
-auto normalize_path(const std::filesystem::path& path) -> std::string {
-    return path.generic_string();
+struct CompileTaskPlan {
+    std::filesystem::path source;
+    std::filesystem::path object_file;
+    std::filesystem::path dep_file;
+    std::string key;
+    double estimated_ms = 1.0;
+    std::uint32_t estimated_peak_mb = kDefaultCompilePeakMb;
+    long long recency_rank = 0;
+};
+
+struct CheckTaskPlan {
+    std::filesystem::path source;
+    std::string relative_path;
+    long long mtime = 0;
+    long long recency_rank = 0;
+    std::uintmax_t size = 0;
+    std::string key;
+    double estimated_ms = 1.0;
+    std::uint32_t estimated_peak_mb = kDefaultCheckPeakMb;
+};
+
+struct CompileCandidatePlan {
+    CompileTaskPlan task;
+    bool stale = false;
+};
+
+struct CheckBatchPlan {
+    std::vector<std::filesystem::path> sources;
+    std::vector<std::string> profile_keys;
+    std::vector<std::string> dep_sources;
+    double estimated_ms = 1.0;
+    std::uint32_t estimated_peak_mb = kDefaultCheckPeakMb;
+    long long recency_rank = 0;
+};
+
+struct OptimizationSelection {
+    build::compile::OptimizationMode mode =
+        build::compile::OptimizationMode::Normal;
+    std::string reason;
+};
+
+auto env_truthy(std::string_view name) -> bool {
+    const auto value = util::env::get(name);
+    if (!value.has_value()) {
+        return false;
+    }
+
+    auto normalized = *value;
+    std::ranges::transform(normalized, normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return !(normalized == "0" || normalized == "false" || normalized == "off" ||
+             normalized == "no");
 }
 
-auto resolved_jobs() -> int {
-    const unsigned hw = std::thread::hardware_concurrency();
-    int jobs = hw == 0 ? 1 : static_cast<int>(hw);
-    if (jobs < 1) {
-        jobs = 1;
-    }
-    if (jobs > 64) {
-        jobs = 64;
-    }
-    return jobs;
+auto aggressive_mode_disabled() -> bool {
+    return env_truthy("PPARGO_INTERNAL_DISABLE_AGGRESSIVE");
 }
 
-template <typename Fn>
-auto run_parallel(std::size_t jobs, std::size_t count, Fn&& fn) -> util::Status {
-    if (count == 0) {
-        return util::Ok;
+auto select_optimization_mode(
+    std::size_t total_tus, std::size_t stale_tasks,
+    const build::settings::ResolvedBuildSettings& settings)
+    -> OptimizationSelection {
+    if (aggressive_mode_disabled()) {
+        return OptimizationSelection{
+            .mode = build::compile::OptimizationMode::Normal,
+            .reason = "disabled by PPARGO_INTERNAL_DISABLE_AGGRESSIVE",
+        };
     }
 
-    const std::size_t worker_count = std::max<std::size_t>(1, std::min(jobs, count));
-    std::atomic<std::size_t> next{0};
-    std::atomic<bool> stop{false};
-    std::optional<std::string> first_error;
-    std::mutex error_mutex;
+    if (total_tus >= settings.aggressive_tu_threshold) {
+        return OptimizationSelection{
+            .mode = build::compile::OptimizationMode::Aggressive,
+            .reason = std::format("selected_tus={} >= {}", total_tus,
+                                  settings.aggressive_tu_threshold),
+        };
+    }
 
-    auto worker = [&stop, &next, count, &fn, &first_error, &error_mutex]() {
-        while (true) {
-            if (stop.load(std::memory_order_relaxed)) {
-                return;
-            }
+    if (stale_tasks >= settings.aggressive_stale_threshold) {
+        return OptimizationSelection{
+            .mode = build::compile::OptimizationMode::Aggressive,
+            .reason = std::format("stale_tasks={} >= {}", stale_tasks,
+                                  settings.aggressive_stale_threshold),
+        };
+    }
 
-            const std::size_t index = next.fetch_add(1);
-            if (index >= count) {
-                return;
-            }
-
-            auto status = fn(index);
-            if (!status) {
-                std::lock_guard<std::mutex> lock(error_mutex);
-                if (!first_error.has_value()) {
-                    first_error = status.error();
-                }
-                stop.store(true, std::memory_order_relaxed);
-                return;
-            }
-        }
+    return OptimizationSelection{
+        .mode = build::compile::OptimizationMode::Normal,
+        .reason = "below aggressive thresholds",
     };
+}
 
-    std::vector<std::thread> workers;
-    workers.reserve(worker_count > 0 ? worker_count - 1 : 0);
-    for (std::size_t i = 1; i < worker_count; ++i) {
-        workers.emplace_back(worker);
+auto emit_optimization_trace(build::compile::CompileMode compile_mode,
+                             const OptimizationSelection& selection,
+                             std::size_t total_tus, std::size_t stale_tasks) -> void {
+    if (!build::compile::detail::env_var_present("PPARGO_TRACE")) {
+        return;
     }
-    worker();
 
-    for (auto& t : workers) {
-        if (t.joinable()) {
-            t.join();
+    const auto mode_text = selection.mode == build::compile::OptimizationMode::Aggressive
+                               ? "aggressive"
+                               : "normal";
+    util::output::trace(std::format(
+        "optimizer: stage={} mode={} reason={} total_tus={} stale_tasks={}",
+        build::compile::detail::mode_name(compile_mode), mode_text, selection.reason,
+        total_tus, stale_tasks));
+}
+
+auto progress_item_name(const std::filesystem::path& path) -> std::string {
+    if (path.filename().empty()) {
+        return path.generic_string();
+    }
+    return path.filename().generic_string();
+}
+
+auto check_batch_display_name(
+    std::span<const std::filesystem::path>  sources) -> std::string {
+    if (sources.empty()) {
+        return "check";
+    }
+
+    const auto first = progress_item_name(sources.front());
+    if (sources.size() == 1) {
+        return first;
+    }
+    return std::format("{} (+{} more)", first, sources.size() - 1);
+}
+
+auto emit_scheduler_line(const build::compile::CompilerConfig& config,
+                         std::size_t task_count) -> void {
+    const auto line = std::format(
+        "scheduler: mode={} tasks={} jobs={} ({})",
+        build::compile::detail::mode_name(config.mode), task_count, config.jobs,
+        config.jobs_reason);
+    if (build::compile::detail::env_var_present("PPARGO_BENCHMARK_JOBS")) {
+        util::output::info(line);
+    } else if (build::compile::detail::scheduler_trace_enabled()) {
+        util::output::trace(line);
+    }
+}
+
+auto with_runtime_capacity(
+    const build::compile::CompilerConfig& config, std::size_t ready_task_count,
+    const build::compile_profile::CompileProfile& profile)
+    -> build::compile::CompilerConfig {
+    auto runtime_config = config;
+    runtime_config.capacity_plan = build::compile::make_capacity_plan(
+        config.mode, ready_task_count,
+        build::compile::detail::parse_forced_jobs_override(), profile);
+    runtime_config.jobs = runtime_config.capacity_plan.total_slots;
+    runtime_config.jobs_reason = runtime_config.capacity_plan.reason;
+    return runtime_config;
+}
+
+auto peak_mb_for(const build::compile_profile::CompileProfile& profile,
+                 std::string_view  key, std::uint32_t fallback)
+    -> std::uint32_t {
+    const auto peak = build::compile_profile::lookup_peak_mb(profile, key);
+    if (!peak.has_value()) {
+        return fallback;
+    }
+    return static_cast<std::uint32_t>(std::max<double>(1.0, *peak));
+}
+
+auto source_key(const std::filesystem::path& source) -> std::string {
+    return util::fs::path_key(source);
+}
+
+auto dependency_depth_for(const build::depscan::DependencyGraph& graph,
+                          const std::filesystem::path& source) -> std::size_t {
+    const auto found = graph.depths.find(source_key(source));
+    return found == graph.depths.end() ? 0 : found->second;
+}
+
+void apply_compile_analysis(std::vector<CompileTaskPlan>& tasks,
+                            const build::depscan::AnalysisResult& analysis) {
+    std::unordered_map<std::string, const build::depscan::AnalyzedSource*> analyzed;
+    analyzed.reserve(analysis.sources.size());
+    for (const auto& source : analysis.sources) {
+        analyzed.emplace(source_key(source.source), &source);
+    }
+
+    for (auto& task : tasks) {
+        const auto found = analyzed.find(source_key(task.source));
+        if (found == analyzed.end()) {
+            continue;
+        }
+        task.recency_rank = found->second->recency_rank;
+    }
+}
+
+void apply_check_analysis(std::vector<CheckTaskPlan>& stale,
+                          const build::depscan::AnalysisResult& analysis) {
+    std::unordered_map<std::string, const build::depscan::AnalyzedSource*> analyzed;
+    analyzed.reserve(analysis.sources.size());
+    for (const auto& source : analysis.sources) {
+        analyzed.emplace(source_key(source.source), &source);
+    }
+
+    for (auto& task : stale) {
+        const auto found = analyzed.find(source_key(task.source));
+        if (found == analyzed.end()) {
+            task.recency_rank = task.mtime;
+            continue;
+        }
+        task.recency_rank = std::max(task.mtime, found->second->recency_rank);
+    }
+}
+
+auto make_check_batch_plans(
+    const std::vector<CheckTaskPlan>& stale,
+    const build::depscan::DependencyGraph& dep_graph,
+    std::size_t target_batches) -> std::vector<CheckBatchPlan> {
+    std::unordered_map<std::string, const CheckTaskPlan*> task_lookup;
+    task_lookup.reserve(stale.size());
+    for (const auto& task : stale) {
+        task_lookup.emplace(source_key(task.source), &task);
+    }
+
+    std::vector<build::scheduler::WeightedPath> weighted;
+    weighted.reserve(stale.size());
+    for (const auto& task : stale) {
+        weighted.push_back(build::scheduler::WeightedPath{
+            .path = task.source,
+            .weight_ms = task.estimated_ms,
+            .recency_rank = task.recency_rank,
+        });
+    }
+    const auto ordered = build::scheduler::order_tasks_by_cost(std::move(weighted));
+
+    std::vector<CheckBatchPlan> plans;
+    if (dep_graph.deps.empty() || dep_graph.had_cycle) {
+        const auto batches =
+            build::scheduler::make_balanced_batches(ordered, target_batches);
+        plans.reserve(batches.size());
+        for (const auto& batch : batches) {
+            CheckBatchPlan plan;
+            plan.sources = batch;
+            plan.estimated_ms = 0.0;
+            plan.estimated_peak_mb = kDefaultCheckPeakMb;
+            for (const auto& source : batch) {
+                const auto found = task_lookup.find(source_key(source));
+                if (found == task_lookup.end()) {
+                    continue;
+                }
+                const auto* task = found->second;
+                plan.profile_keys.push_back(task->key);
+                plan.estimated_ms += task->estimated_ms;
+                plan.estimated_peak_mb =
+                    std::max(plan.estimated_peak_mb, task->estimated_peak_mb);
+                plan.recency_rank = std::max(plan.recency_rank, task->recency_rank);
+            }
+            plans.push_back(std::move(plan));
+        }
+        return plans;
+    }
+
+    std::map<std::size_t, std::vector<build::scheduler::WeightedPath>> layers;
+    for (const auto& task : ordered) {
+        layers[dependency_depth_for(dep_graph, task.path)].push_back(task);
+    }
+
+    for (const auto& [depth, layer] : layers) {
+        (void)depth;
+        const auto layer_batch_count =
+            std::max<std::size_t>(1, std::min<std::size_t>(layer.size(), target_batches));
+        const auto layer_batches =
+            build::scheduler::make_balanced_batches(layer, layer_batch_count);
+        for (const auto& batch : layer_batches) {
+            CheckBatchPlan plan;
+            plan.sources = batch;
+            plan.estimated_ms = 0.0;
+            plan.estimated_peak_mb = kDefaultCheckPeakMb;
+
+            std::unordered_set<std::string> dep_sources;
+            for (const auto& source : batch) {
+                const auto found = task_lookup.find(source_key(source));
+                if (found == task_lookup.end()) {
+                    continue;
+                }
+                const auto* task = found->second;
+                plan.profile_keys.push_back(task->key);
+                plan.estimated_ms += task->estimated_ms;
+                plan.estimated_peak_mb =
+                    std::max(plan.estimated_peak_mb, task->estimated_peak_mb);
+                plan.recency_rank = std::max(plan.recency_rank, task->recency_rank);
+
+                const auto deps = dep_graph.deps.find(source_key(source));
+                if (deps == dep_graph.deps.end()) {
+                    continue;
+                }
+                for (const auto& dep_source : deps->second) {
+                    dep_sources.insert(dep_source);
+                }
+            }
+
+            plan.dep_sources.assign(dep_sources.begin(), dep_sources.end());
+            std::sort(plan.dep_sources.begin(), plan.dep_sources.end());
+            plans.push_back(std::move(plan));
         }
     }
 
-    if (first_error.has_value()) {
-        return std::unexpected(*first_error);
-    }
-    return util::Ok;
-}
-
-auto compile_flags(const core::Manifest& manifest, bool release)
-    -> std::vector<std::string> {
-    std::vector<std::string> flags;
-    if (manifest.package.edition == "cpp26") {
-        flags.push_back("-std=c++26");
-    } else if (manifest.package.edition == "cpp23") {
-        flags.push_back("-std=c++23");
-    } else if (manifest.package.edition == "cpp20") {
-        flags.push_back("-std=c++20");
-    } else {
-        flags.push_back("-std=c++17");
-    }
-
-    if (release) {
-        flags.push_back("-O3");
-    } else {
-        flags.push_back("-O0");
-        flags.push_back("-g");
-    }
-
-#ifdef _WIN32
-    flags.push_back("-fms-runtime-lib=dll");
-#endif
-
-    flags.push_back("-Wall");
-    flags.push_back("-Wextra");
-    return flags;
-}
-
-auto include_paths_for_manifest(const std::filesystem::path& root, const core::Manifest& manifest)
-    -> std::vector<std::filesystem::path> {
-    std::vector<std::filesystem::path> include_paths;
-    include_paths.reserve(manifest.build.include_dirs.size() + 1);
-    for (const auto& include_dir : manifest.build.include_dirs) {
-        include_paths.push_back(root / include_dir);
-    }
-    include_paths.push_back(root / "packages" / core::detect_triplet() / "include");
-    return include_paths;
-}
-
-auto compiler_for_manifest(const core::Manifest& manifest) -> std::filesystem::path {
-    return manifest.toolchain.compiler.empty() ? std::filesystem::path("clang++")
-                                               : std::filesystem::path(manifest.toolchain.compiler);
+    return plans;
 }
 
 auto compile_source(const build::compile::CompilerConfig& config,
-                    const std::filesystem::path& source, const std::filesystem::path& object_file,
-                    const std::filesystem::path& dep_file) -> util::Status {
+                    const std::filesystem::path& source,
+                    const std::filesystem::path& object_file,
+                    const std::filesystem::path& dep_file,
+                    const std::atomic_bool* cancel_requested)
+    -> util::Result<util::process::ProcessMetrics> {
     std::vector<std::string> args;
     args.reserve(config.flags.size() + config.include_paths.size() * 2 + 8);
     for (const auto& flag : config.flags) {
@@ -157,6 +373,10 @@ auto compile_source(const build::compile::CompilerConfig& config,
         args.push_back("-I");
         args.push_back(include_path.string());
     }
+    if (config.pch_file.has_value()) {
+        args.push_back("-include-pch");
+        args.push_back(config.pch_file->string());
+    }
     args.push_back("-c");
     args.push_back(source.string());
     args.push_back("-o");
@@ -165,166 +385,61 @@ auto compile_source(const build::compile::CompilerConfig& config,
     args.push_back("-MF");
     args.push_back(dep_file.string());
 
-    auto rc = TRY(build::process_bridge::run(config.compiler, args));
-    if (rc != 0) {
-        return std::unexpected("Build Error: Compilation failed for: " +
-                               source.string());
+    auto run = GUARD(build::process_bridge::run(
+        config.compiler, args,
+        build::process_bridge::RunOptions{
+            .cancel_requested = cancel_requested,
+            .capture_policy = build::process_bridge::CapturePolicy::BufferedDiagnostics,
+        }));
+    if (run.canceled) {
+        return util::process::ProcessMetrics{};
+    }
+    if (run.exit_code != 0) {
+        return std::unexpected(util::make_error("Compilation failed for: " +
+                                   source.string()));
+    }
+    return run.metrics.value_or(util::process::ProcessMetrics{});
+}
+
+auto execute_graph(
+    const build::actions::ActionGraph& graph,
+    const build::scheduler_runtime::CapacityPlan& plan,
+    const build::scheduler_runtime::ActionExecutor& executor,
+    const build::scheduler_runtime::ActionObserver& observer = {})
+    -> util::Status {
+    std::atomic_bool cancel_requested{false};
+    build::scheduler_runtime::SchedulerOptions options{};
+    options.cancel_requested = &cancel_requested;
+    options.observer = observer;
+    const auto result =
+        build::scheduler_runtime::execute_action_graph(graph, plan, options, executor);
+    if (!result.success) {
+        return std::unexpected(result.first_error.value_or(
+            util::make_error("Action graph failed.")));
     }
     return util::Ok;
-}
-
-auto check_source(const build::compile::CompilerConfig& config,
-                  const std::filesystem::path& source) -> util::Status {
-    std::vector<std::string> args;
-    args.reserve(config.flags.size() + config.include_paths.size() * 2 + 3);
-    for (const auto& flag : config.flags) {
-        args.push_back(flag);
-    }
-    for (const auto& include_path : config.include_paths) {
-        args.push_back("-I");
-        args.push_back(include_path.string());
-    }
-    args.push_back("-fsyntax-only");
-    args.push_back(source.string());
-
-    auto rc = TRY(build::process_bridge::run(config.compiler, args));
-    if (rc != 0) {
-        return std::unexpected("Build Error: Check failed for: " + source.string());
-    }
-    return util::Ok;
-}
-
-auto recreate_directory(const std::filesystem::path& dir) -> util::Status {
-    std::error_code ec;
-    std::filesystem::remove_all(dir, ec);
-    if (ec) {
-        return std::unexpected("I/O Error: Failed to remove directory: " +
-                               dir.string() + " (" + ec.message() + ")");
-    }
-
-    std::filesystem::create_directories(dir, ec);
-    if (ec) {
-        return std::unexpected("I/O Error: Failed to create directory: " +
-                               dir.string() + " (" + ec.message() + ")");
-    }
-    return util::Ok;
-}
-
-auto file_stamp(const std::filesystem::path& path) -> util::Result<long long> {
-    std::error_code ec;
-    const auto stamp = std::filesystem::last_write_time(path, ec);
-    if (ec) {
-        return std::unexpected("I/O Error: Failed to read timestamp: " +
-                               path.string() + " (" + ec.message() + ")");
-    }
-    return static_cast<long long>(stamp.time_since_epoch().count());
-}
-
-auto file_size_value(const std::filesystem::path& path) -> util::Result<std::uintmax_t> {
-    std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
-    if (ec) {
-        return std::unexpected("I/O Error: Failed to read file size: " +
-                               path.string() + " (" + ec.message() + ")");
-    }
-    return size;
-}
-
-auto signature_hash_text(const std::string& signature) -> std::string {
-    return std::to_string(std::hash<std::string>{}(signature));
-}
-
-auto incremental_trace_enabled() -> bool {
-#ifdef _WIN32
-    char* value = nullptr;
-    std::size_t len = 0;
-    if (_dupenv_s(&value, &len, "PPARGO_TRACE_INCREMENTAL") != 0 ||
-        value == nullptr) {
-        return false;
-    }
-    const bool enabled = len > 0;
-    std::free(value);
-    return enabled;
-#else
-    return std::getenv("PPARGO_TRACE_INCREMENTAL") != nullptr;
-#endif
-}
-
-auto load_check_cache(const std::filesystem::path& cache_file, const std::string& signature_hash)
-    -> std::unordered_map<std::string, CheckCacheEntry> {
-    std::unordered_map<std::string, CheckCacheEntry> cache;
-    std::error_code ec;
-    if (!std::filesystem::exists(cache_file, ec) || ec) {
-        return cache;
-    }
-
-    std::ifstream input(cache_file);
-    if (!input.is_open()) {
-        return cache;
-    }
-
-    std::string line;
-    if (!std::getline(input, line) || line != ("sig=" + signature_hash)) {
-        return cache;
-    }
-
-    while (std::getline(input, line)) {
-        if (line.empty()) {
-            continue;
-        }
-
-        const auto first_tab = line.find('\t');
-        const auto second_tab = line.find(
-            '\t', first_tab == std::string::npos ? 0 : first_tab + 1);
-        if (first_tab == std::string::npos || second_tab == std::string::npos) {
-            continue;
-        }
-
-        const std::string path = line.substr(0, first_tab);
-        const std::string mtime_text =
-            line.substr(first_tab + 1, second_tab - first_tab - 1);
-        const std::string size_text = line.substr(second_tab + 1);
-
-        auto mtime_stream = std::istringstream(mtime_text);
-        auto size_stream = std::istringstream(size_text);
-        long long mtime = 0;
-        std::uintmax_t size = 0;
-        if ((mtime_stream >> mtime) && (size_stream >> size)) {
-            cache[path] = CheckCacheEntry{mtime, size};
-        }
-    }
-
-    return cache;
-}
-
-auto write_check_cache(
-    const std::filesystem::path& cache_file, const std::string& signature_hash,
-    const std::unordered_map<std::string, CheckCacheEntry>& cache) -> util::Status {
-    std::ostringstream out;
-    out << "sig=" << signature_hash << "\n";
-    for (const auto& [path, entry] : cache) {
-        out << path << "\t" << entry.mtime << "\t" << entry.size << "\n";
-    }
-    return util::fs::atomic_write_text_result(cache_file, out.str());
 }
 
 }  // namespace
 
 namespace build::compile {
 
-auto make_compiler_config(const std::filesystem::path& root, const core::Manifest& manifest,
-                          bool release) -> util::Result<CompilerConfig> {
-    CompilerConfig config;
-    config.compiler = compiler_for_manifest(manifest);
-    config.flags = compile_flags(manifest, release);
-    config.include_paths = include_paths_for_manifest(root, manifest);
-    config.jobs = resolved_jobs();
-    return config;
-}
-
 auto compile_signature(const CompilerConfig& config) -> std::string {
     std::ostringstream out;
+    out << "mode=" << detail::mode_name(config.mode) << "\n";
     out << config.compiler.generic_string() << "\n";
+    out << "modules=" << (config.modules_enabled ? "true" : "false") << "\n";
+    out << "module-output=" << config.module_output_dir.generic_string() << "\n";
+    out << "aggressive-tu-threshold="
+        << config.build_settings.aggressive_tu_threshold << "\n";
+    out << "aggressive-stale-threshold="
+        << config.build_settings.aggressive_stale_threshold << "\n";
+    out << "pch-scan-lines=" << config.build_settings.pch_scan_lines << "\n";
+    out << "pch-frequency-threshold="
+        << config.build_settings.pch_frequency_threshold << "\n";
+    out << "pch-max-headers=" << config.build_settings.pch_max_headers << "\n";
+    out << "depscan-timeout-ms=" << config.build_settings.depscan_timeout_ms
+        << "\n";
     for (const auto& flag : config.flags) {
         out << flag << "\n";
     }
@@ -332,73 +447,75 @@ auto compile_signature(const CompilerConfig& config) -> std::string {
     for (const auto& include_path : config.include_paths) {
         out << include_path.generic_string() << "\n";
     }
+    out << "--module-interface-exts--\n";
+    for (const auto& ext : config.module_interface_exts) {
+        out << ext << "\n";
+    }
     return out.str();
 }
 
-auto refresh_object_dir_if_signature_changed(const std::filesystem::path& build_root,
-                                             const std::string& signature)
-    -> util::Status {
-    const std::filesystem::path signature_file = build_root / ".compile_signature";
-    bool changed = true;
-
-    std::error_code ec;
-    if (std::filesystem::exists(signature_file, ec) && !ec) {
-        std::ifstream input(signature_file);
-        if (!input.is_open()) {
-            return std::unexpected("I/O Error: Failed to open signature file: " +
-                                   signature_file.string());
-        }
-        std::stringstream buffer;
-        buffer << input.rdbuf();
-        changed = buffer.str() != signature;
-    }
-
-    if (changed) {
-        TRY_void(recreate_directory(build_root / "obj"));
-        TRY_void(util::fs::atomic_write_text_result(signature_file, signature));
-    }
-    return util::Ok;
-}
-
-auto compile_objects(const std::filesystem::path& source_root, const std::filesystem::path& obj_root,
-                     const std::vector<std::filesystem::path>& sources,
+auto compile_objects(const std::filesystem::path& source_root,
+                     const std::filesystem::path& obj_root,
+                     std::span<const std::filesystem::path>  sources,
                      const CompilerConfig& config, bool force_rebuild)
     -> util::Result<CompileResult> {
-    struct CompileTask {
-        std::filesystem::path source;
-        std::filesystem::path object_file;
-        std::filesystem::path dep_file;
-    };
-
     CompileResult result;
     result.objects.reserve(sources.size());
 
-    std::vector<CompileTask> tasks;
-    tasks.reserve(sources.size());
-    const bool trace = incremental_trace_enabled();
+    const bool trace = detail::incremental_trace_enabled();
+    const auto signature_hash = detail::signature_hash_text(compile_signature(config));
+    const scheduler::SignatureContext signature_context{
+        .signature_hash = signature_hash,
+        .mode_tag = std::string(detail::mode_name(CompileMode::Build)),
+    };
+
+    const auto build_root = obj_root.parent_path();
+    auto profile = GUARD(compile_profile::load_profile(build_root));
+
+    std::vector<CompileCandidatePlan> candidates;
+    candidates.reserve(sources.size());
+    std::size_t stale_count = 0;
 
     for (const auto& source : sources) {
         auto object_file =
-            TRY(build::graph::object_path_for_source(source_root, obj_root, source));
-
+            GUARD(build::graph::object_path_for_source(source_root, obj_root, source));
         std::error_code ec;
         std::filesystem::create_directories(object_file.parent_path(), ec);
         if (ec) {
-            return std::unexpected("I/O Error: Failed to create object directory: " +
-                                   object_file.parent_path().string() + " (" +
-                                   ec.message() + ")");
+            return std::unexpected(util::make_error(
+                "Failed to create object directory: " +
+                object_file.parent_path().string() + " (" + ec.message() + ")"));
         }
 
         auto dep_file = object_file;
         dep_file.replace_extension(".d");
 
-        const auto decision = force_rebuild
-                                  ? build::fingerprint::RebuildDecision{}
-                                  : build::fingerprint::evaluate_rebuild(
-                                        source_root, source, object_file, dep_file);
-        if (force_rebuild ||
-            decision.reason != build::fingerprint::RebuildReason::UpToDate) {
-            tasks.push_back(CompileTask{source, object_file, dep_file});
+        const auto decision =
+            force_rebuild
+                ? build::fingerprint::RebuildDecision{}
+                : build::fingerprint::evaluate_rebuild(source_root, source,
+                                                       object_file, dep_file);
+        const auto key = scheduler::task_key_for_source(source, signature_context);
+        const auto recency_rank = GUARD(detail::file_stamp(source));
+        const bool stale =
+            force_rebuild ||
+            decision.reason != build::fingerprint::RebuildReason::UpToDate;
+        candidates.push_back(CompileCandidatePlan{
+            .task =
+                CompileTaskPlan{
+                    .source = source,
+                    .object_file = object_file,
+                    .dep_file = dep_file,
+                    .key = key,
+                    .estimated_ms = compile_profile::lookup_cost_ms(profile, key)
+                                        .value_or(scheduler::fallback_cost_ms(source)),
+                    .estimated_peak_mb = peak_mb_for(profile, key, kDefaultCompilePeakMb),
+                    .recency_rank = recency_rank,
+                },
+            .stale = stale,
+        });
+        if (stale) {
+            ++stale_count;
             if (trace) {
                 if (force_rebuild) {
                     util::output::trace(std::format(
@@ -419,65 +536,401 @@ auto compile_objects(const std::filesystem::path& source_root, const std::filesy
         result.objects.push_back(object_file);
     }
 
-    TRY_void(run_parallel(
-        static_cast<std::size_t>(config.jobs), tasks.size(),
-        [&config, &tasks](std::size_t i) {
-            return compile_source(config, tasks[i].source, tasks[i].object_file,
-                                  tasks[i].dep_file);
-        }));
+    const auto optimization = select_optimization_mode(
+        sources.size(), stale_count, config.build_settings);
+    emit_optimization_trace(CompileMode::Build, optimization, sources.size(),
+                            stale_count);
+
+    auto analysis_config = with_runtime_capacity(config, stale_count, profile);
+    analysis_config.optimization_mode = optimization.mode;
+    analysis_config.optimization_reason = optimization.reason;
+
+    std::vector<CompileTaskPlan> tasks;
+    tasks.reserve(candidates.size());
+    build::depscan::DependencyGraph dep_graph;
+
+    if (!candidates.empty()) {
+        if (analysis_config.modules_enabled && stale_count > 0) {
+            std::vector<std::filesystem::path> analysis_sources;
+            std::vector<std::filesystem::path> analysis_depfiles;
+            analysis_sources.reserve(candidates.size());
+            analysis_depfiles.reserve(candidates.size());
+            for (const auto& candidate : candidates) {
+                analysis_sources.push_back(candidate.task.source);
+                analysis_depfiles.push_back(candidate.task.dep_file);
+            }
+
+            const auto analysis = GUARD(build::depscan::analyze_sources(
+                source_root, build_root, analysis_sources, analysis_config,
+                analysis_depfiles));
+            dep_graph = build::depscan::build_dependency_graph(analysis.sources);
+            for (auto& candidate : candidates) {
+                std::vector<CompileTaskPlan> one_task{candidate.task};
+                apply_compile_analysis(one_task, analysis);
+                candidate.task = std::move(one_task.front());
+            }
+
+            if (!dep_graph.had_cycle) {
+                std::unordered_set<std::string> stale_sources;
+                for (const auto& candidate : candidates) {
+                    if (candidate.stale) {
+                        stale_sources.insert(source_key(candidate.task.source));
+                    }
+                }
+
+                bool changed = true;
+                while (changed) {
+                    changed = false;
+                    for (auto& candidate : candidates) {
+                        if (candidate.stale) {
+                            continue;
+                        }
+                        const auto deps = dep_graph.deps.find(source_key(candidate.task.source));
+                        if (deps == dep_graph.deps.end()) {
+                            continue;
+                        }
+                        const bool depends_on_stale = std::ranges::any_of(
+                            deps->second, [&](const std::string& dep_source) {
+                                return stale_sources.contains(dep_source);
+                            });
+                        if (!depends_on_stale) {
+                            continue;
+                        }
+                        candidate.stale = true;
+                        stale_sources.insert(source_key(candidate.task.source));
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        for (const auto& candidate : candidates) {
+            if (candidate.stale) {
+                tasks.push_back(candidate.task);
+            }
+        }
+
+        if (!analysis_config.modules_enabled && !tasks.empty()) {
+            std::vector<std::filesystem::path> task_sources;
+            std::vector<std::filesystem::path> task_depfiles;
+            task_sources.reserve(tasks.size());
+            task_depfiles.reserve(tasks.size());
+            for (const auto& task : tasks) {
+                task_sources.push_back(task.source);
+                task_depfiles.push_back(task.dep_file);
+            }
+
+            const auto analysis = GUARD(build::depscan::analyze_sources(
+                source_root, build_root, task_sources, analysis_config, task_depfiles));
+            apply_compile_analysis(tasks, analysis);
+            dep_graph = build::depscan::build_dependency_graph(analysis.sources);
+        }
+    }
+
+    std::stable_sort(tasks.begin(), tasks.end(),
+                     [&](const CompileTaskPlan& lhs, const CompileTaskPlan& rhs) {
+                         const auto lhs_depth = dep_graph.had_cycle
+                                                    ? 0U
+                                                    : dependency_depth_for(dep_graph,
+                                                                           lhs.source);
+                         const auto rhs_depth = dep_graph.had_cycle
+                                                    ? 0U
+                                                    : dependency_depth_for(dep_graph,
+                                                                           rhs.source);
+                         if (lhs_depth != rhs_depth) {
+                             return lhs_depth < rhs_depth;
+                         }
+                         if (lhs.recency_rank != rhs.recency_rank) {
+                             return lhs.recency_rank > rhs.recency_rank;
+                         }
+                         if (lhs.estimated_ms != rhs.estimated_ms) {
+                             return lhs.estimated_ms > rhs.estimated_ms;
+                         }
+                         return lhs.source.generic_string() < rhs.source.generic_string();
+                     });
+
+    auto runtime_config = with_runtime_capacity(config, tasks.size(), profile);
+    runtime_config.optimization_mode = optimization.mode;
+    runtime_config.optimization_reason = optimization.reason;
+    if (runtime_config.optimization_mode == OptimizationMode::Aggressive) {
+        runtime_config.pch_file =
+            detail::ensure_auto_pch(runtime_config, build_root, sources);
+    }
+
+    emit_scheduler_line(runtime_config, tasks.size());
+    if (!tasks.empty()) {
+        build::actions::ActionGraph graph;
+        std::unordered_map<std::string, build::actions::ActionId> action_ids;
+        action_ids.reserve(tasks.size());
+        for (const auto& task : tasks) {
+            std::vector<build::actions::ActionId> deps;
+            if (!dep_graph.had_cycle) {
+                const auto found = dep_graph.deps.find(source_key(task.source));
+                if (found != dep_graph.deps.end()) {
+                    for (const auto& dep_source : found->second) {
+                        const auto action = action_ids.find(dep_source);
+                        if (action != action_ids.end()) {
+                            deps.push_back(action->second);
+                        }
+                    }
+                }
+            }
+
+            const auto action_id = build::actions::append_action(
+                graph, build::actions::ActionKind::Compile,
+                build::actions::PoolKind::Compile, std::move(deps),
+                build::actions::CompileActionPayload{
+                    .source = task.source,
+                    .object_file = task.object_file,
+                    .dep_file = task.dep_file,
+                    .profile_key = task.key,
+                },
+                task.estimated_ms, task.estimated_peak_mb,
+                progress_item_name(task.source), false, task.recency_rank);
+            action_ids.emplace(source_key(task.source), action_id);
+        }
+
+        const auto observer = detail::make_progress_observer(
+            "Compiling", graph, [](const build::actions::ActionNode& node) {
+                return node.kind == build::actions::ActionKind::Compile;
+            });
+
+        std::vector<TimedSample> timing_samples;
+        timing_samples.reserve(tasks.size());
+        std::mutex timing_mutex;
+
+        GUARD(execute_graph(
+            graph, runtime_config.capacity_plan,
+            [&runtime_config, &timing_samples,
+             &timing_mutex](const build::actions::ActionNode& node,
+                            const std::atomic_bool* cancel_requested) -> util::Status {
+                const auto& payload =
+                    std::get<build::actions::CompileActionPayload>(node.payload);
+                auto metrics = GUARD(compile_source(
+                    runtime_config, payload.source, payload.object_file,
+                    payload.dep_file, cancel_requested));
+                if (metrics.wall_ms > 0.0) {
+                    std::lock_guard<std::mutex> lock(timing_mutex);
+                    timing_samples.push_back(TimedSample{
+                        .key = payload.profile_key,
+                        .elapsed_ms = std::max(1.0, metrics.wall_ms),
+                        .peak_mb = metrics.peak_working_set_mb,
+                        .startup_ms = 0.0,
+                    });
+                }
+                return util::Ok;
+            },
+            observer));
+
+        for (const auto& sample : timing_samples) {
+            compile_profile::update_task_stats(profile, sample.key, sample.elapsed_ms,
+                                               sample.peak_mb, sample.startup_ms);
+        }
+        GUARD(compile_profile::save_profile(build_root, profile));
+    }
 
     result.compiled_count = tasks.size();
     return result;
 }
 
-auto run_checks_with_cache(const std::filesystem::path& root, const std::filesystem::path& build_root,
-                           const std::vector<std::filesystem::path>& sources,
+auto run_checks_with_cache(const std::filesystem::path& root,
+                           const std::filesystem::path& build_root,
+                           std::span<const std::filesystem::path>  sources,
                            const CompilerConfig& config) -> util::Status {
-    struct CheckTask {
-        std::filesystem::path source;
-        std::string relative_path;
-        long long mtime = 0;
-        std::uintmax_t size = 0;
+    const auto signature_hash = detail::signature_hash_text(compile_signature(config));
+    const auto cache_file = build_root / (".check_cache_" + signature_hash);
+    auto cache = detail::load_check_cache(cache_file, signature_hash);
+    auto profile = GUARD(compile_profile::load_profile(build_root));
+
+    const scheduler::SignatureContext signature_context{
+        .signature_hash = signature_hash,
+        .mode_tag = std::string(detail::mode_name(CompileMode::Check)),
     };
 
-    const auto signature_hash = signature_hash_text(compile_signature(config));
-    const auto cache_file = build_root / ".check_cache";
-    auto cache = load_check_cache(cache_file, signature_hash);
-
-    std::vector<CheckTask> stale;
-    stale.reserve(sources.size());
+    std::vector<CheckTaskPlan> candidates;
+    candidates.reserve(sources.size());
 
     for (const auto& source : sources) {
         std::error_code ec;
         const auto relative_path = std::filesystem::relative(source, root, ec);
         if (ec) {
-            return std::unexpected("Build Error: Failed to resolve relative source path: " +
-                                   source.string());
+            return std::unexpected(util::make_error(
+                "Failed to resolve relative source path: " +
+                source.string()));
         }
-        const std::string relative = normalize_path(relative_path);
-        auto mtime = TRY(file_stamp(source));
-        auto size = TRY(file_size_value(source));
+        const std::string relative = util::fs::path_key(relative_path);
+        auto mtime = GUARD(detail::file_stamp(source));
+        auto size = GUARD(detail::file_size_value(source));
+        const auto key = scheduler::task_key_for_source(source, signature_context);
+        candidates.push_back(CheckTaskPlan{
+            .source = source,
+            .relative_path = relative,
+            .mtime = mtime,
+            .recency_rank = mtime,
+            .size = size,
+            .key = key,
+            .estimated_ms = compile_profile::lookup_cost_ms(profile, key)
+                                .value_or(scheduler::fallback_cost_ms(source)),
+            .estimated_peak_mb = peak_mb_for(profile, key, kDefaultCheckPeakMb),
+        });
+    }
 
-        const auto found = cache.find(relative);
-        if (found != cache.end() && found->second.mtime == mtime &&
-            found->second.size == size) {
+    auto analysis_config = with_runtime_capacity(config, candidates.size(), profile);
+    build::depscan::DependencyGraph dep_graph;
+    if (!candidates.empty()) {
+        std::vector<std::filesystem::path> analysis_sources;
+        analysis_sources.reserve(candidates.size());
+        for (const auto& task : candidates) {
+            analysis_sources.push_back(task.source);
+        }
+
+        const auto analysis = GUARD(build::depscan::analyze_sources(
+            root, build_root, analysis_sources, analysis_config));
+        apply_check_analysis(candidates, analysis);
+        dep_graph = build::depscan::build_dependency_graph(analysis.sources);
+    }
+
+    std::vector<CheckTaskPlan> stale;
+    stale.reserve(candidates.size());
+    for (const auto& task : candidates) {
+        const auto found = cache.find(task.relative_path);
+        if (found != cache.end() && found->second.mtime == task.mtime &&
+            found->second.size == task.size &&
+            found->second.dependency_recency == task.recency_rank) {
             continue;
         }
-
-        stale.push_back(CheckTask{source, relative, mtime, size});
+        stale.push_back(task);
     }
 
-    TRY_void(run_parallel(
-        static_cast<std::size_t>(config.jobs), stale.size(),
-        [&config, &stale](std::size_t i) { return check_source(config, stale[i].source); }));
+    const auto optimization = select_optimization_mode(
+        sources.size(), stale.size(), config.build_settings);
+    emit_optimization_trace(CompileMode::Check, optimization, sources.size(),
+                            stale.size());
+
+    auto provisional_config = with_runtime_capacity(config, stale.size(), profile);
+    provisional_config.optimization_mode = optimization.mode;
+    provisional_config.optimization_reason = optimization.reason;
+    if (provisional_config.optimization_mode == OptimizationMode::Aggressive) {
+        provisional_config.pch_file =
+            detail::ensure_auto_pch(provisional_config, build_root, sources);
+    }
+
+    const auto target_batches = std::max<std::size_t>(
+        1, std::min<std::size_t>(
+               stale.empty() ? 1 : stale.size(),
+               static_cast<std::size_t>(std::max(1, provisional_config.jobs)) * 2));
+
+    const auto batch_plans = make_check_batch_plans(stale, dep_graph, target_batches);
+
+    auto runtime_config = with_runtime_capacity(config, batch_plans.size(), profile);
+    runtime_config.optimization_mode = optimization.mode;
+    runtime_config.optimization_reason = optimization.reason;
+    runtime_config.pch_file = provisional_config.pch_file;
+    emit_scheduler_line(runtime_config, batch_plans.size());
+    if (!batch_plans.empty()) {
+        build::actions::ActionGraph graph;
+        std::unordered_map<std::string, build::actions::ActionId> batch_source_to_action;
+        for (const auto& batch : batch_plans) {
+            std::vector<build::actions::ActionId> deps;
+            for (const auto& dep_source : batch.dep_sources) {
+                const auto dep = batch_source_to_action.find(dep_source);
+                if (dep != batch_source_to_action.end()) {
+                    deps.push_back(dep->second);
+                }
+            }
+
+            const auto action_id = build::actions::append_action(
+                graph, build::actions::ActionKind::CheckBatch,
+                build::actions::PoolKind::Check, std::move(deps),
+                build::actions::CheckBatchPayload{
+                    .sources = batch.sources,
+                    .profile_keys = batch.profile_keys,
+                },
+                std::max(1.0, batch.estimated_ms), batch.estimated_peak_mb,
+                check_batch_display_name(batch.sources), false, batch.recency_rank);
+            for (const auto& source : batch.sources) {
+                batch_source_to_action[source_key(source)] = action_id;
+            }
+        }
+
+        const auto observer = detail::make_progress_observer(
+            "Checking", graph, [](const build::actions::ActionNode& node) {
+                return node.kind == build::actions::ActionKind::CheckBatch;
+            });
+
+        std::vector<TimedSample> timing_samples;
+        timing_samples.reserve(stale.size());
+        std::mutex timing_mutex;
+
+        GUARD(execute_graph(
+            graph, runtime_config.capacity_plan,
+            [&runtime_config, &timing_samples, &timing_mutex](
+                const build::actions::ActionNode& node,
+                const std::atomic_bool* cancel_requested) -> util::Status {
+                const auto& payload =
+                    std::get<build::actions::CheckBatchPayload>(node.payload);
+
+                auto batch_metrics = detail::run_check_batch(runtime_config,
+                                                            payload.sources,
+                                                            cancel_requested);
+                if (!batch_metrics) {
+                    for (std::size_t i = 0; i < payload.sources.size(); ++i) {
+                        auto single = detail::check_source(runtime_config,
+                                                           payload.sources[i],
+                                                           cancel_requested);
+                        if (!single) {
+                            return std::unexpected(single.error());
+                        }
+                        if (single->wall_ms > 0.0) {
+                            std::lock_guard<std::mutex> lock(timing_mutex);
+                            timing_samples.push_back(TimedSample{
+                                .key = payload.profile_keys[i],
+                                .elapsed_ms = std::max(1.0, single->wall_ms),
+                                .peak_mb = single->peak_working_set_mb,
+                                .startup_ms = 0.0,
+                            });
+                        }
+                    }
+                    return util::Ok;
+                }
+
+                if (batch_metrics->wall_ms <= 0.0) {
+                    return util::Ok;
+                }
+
+                const double per_source_ms =
+                    std::max(1.0, batch_metrics->wall_ms /
+                                      static_cast<double>(payload.sources.size()));
+                const auto peak_sample =
+                    payload.sources.size() == 1 ? batch_metrics->peak_working_set_mb
+                                                : std::optional<double>{};
+                std::lock_guard<std::mutex> lock(timing_mutex);
+                for (const auto& key : payload.profile_keys) {
+                    timing_samples.push_back(TimedSample{
+                        .key = key,
+                        .elapsed_ms = per_source_ms,
+                        .peak_mb = peak_sample,
+                        .startup_ms = 0.0,
+                    });
+                }
+                return util::Ok;
+            },
+            observer));
+
+        for (const auto& sample : timing_samples) {
+            compile_profile::update_task_stats(profile, sample.key, sample.elapsed_ms,
+                                               sample.peak_mb, sample.startup_ms);
+        }
+        GUARD(compile_profile::save_profile(build_root, profile));
+    }
 
     for (const auto& task : stale) {
-        cache[task.relative_path] = CheckCacheEntry{task.mtime, task.size};
+        cache[task.relative_path] =
+            detail::CheckCacheEntry{task.mtime, task.size, task.recency_rank};
     }
 
-    return write_check_cache(cache_file, signature_hash, cache);
+    return detail::write_check_cache(cache_file, signature_hash, cache);
 }
 
 }  // namespace build::compile
-
 

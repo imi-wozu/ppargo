@@ -1,43 +1,94 @@
-#include "cli/commands/commands.hpp"
-
 #include <chrono>
+#include <filesystem>
 #include <format>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <utility>
 
 #include "build/manager.hpp"
-#include "core/manifest.hpp"
-#include "core/paths.hpp"
+#include "cli/commands/commands.hpp"
+#include "cli/commands/common.hpp"
+#include "package/manager.hpp"
 #include "util/output.hpp"
-#include "util/result.hpp"
 
 namespace cli {
 
+namespace {
+
+auto make_selection_options(const BuildCommand& command)
+    -> build::targets::BuildSelectionOptions {
+    return build::targets::BuildSelectionOptions{
+        .bins = command.bins,
+        .bins_all = command.bins_all,
+        .examples = command.examples,
+        .examples_all = command.examples_all,
+        .tests = command.tests,
+        .tests_all = command.tests_all,
+        .benches = {},
+        .benches_all = false,
+    };
+}
+
+auto make_package_selection_options(const BuildCommand& command)
+    -> commands::common::PackageSelectionOptions {
+    return commands::common::PackageSelectionOptions{
+        .workspace = command.workspace,
+        .all = command.all_packages,
+        .packages = command.packages,
+        .excludes = command.exclude_packages,
+    };
+}
+
+}  // namespace
+
 auto BuildCommand::execute() const -> util::Status {
-    auto root = TRY(core::find_project_root());
-    auto manifest = TRY(core::load_manifest(root / "ppargo.toml"));
+    const auto start{std::chrono::steady_clock::now()};
+    commands::common::ScopedCompileEnvironment scoped_environment(
+        commands::common::compile_environment_settings(jobs, verbose));
 
-    const auto start = std::chrono::steady_clock::now();
-    build::BuildOptions options;
-    options.release = release;
-    options.mode = build::BuildOptions::Mode::Build;
-    auto result = TRY(build::execute(root, manifest, options));
-    const auto elapsed =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start)
-            .count();
+    auto contexts = GUARD(commands::common::prepare_build_command_contexts(
+        manifest_path, target_dir,
+        commands::common::make_dependency_workflow_options(locked, offline,
+                                                           frozen, features,
+                                                           all_features,
+                                                           no_default_features),
+        make_package_selection_options(*this)));
 
-    if (result.compiled_units > 0 || result.linked) {
-        util::output::argo_status(
-            "Compiling", util::output::Color::Green,
-            std::format("{} v{} ({})", manifest.package.name,
-                        manifest.package.version, root.string()));
+    std::size_t built_targets = 0;
+    for (auto& context : contexts) {
+        const auto selections = GUARD(build::targets::resolve_build_selections(
+            context.project.project.root, context.project.project.manifest,
+            make_selection_options(*this)));
+        commands::common::log_selected_targets(context.project, verbose,
+                                               "building", selections);
+
+        for (const auto& selection : selections) {
+            auto dependency_artifacts =
+                GUARD(commands::common::dependency_artifacts_for_selection(
+                    context, selection));
+            build::BuildOptions options{
+                .release = release,
+                .mode = build::BuildOptions::Mode::Build,
+                .target = selection,
+                .output_dir_override = context.project.output_dir_override,
+                .dependency_artifacts = std::move(dependency_artifacts),
+            };
+            GUARD(build::execute(context.project.project.root,
+                                 context.project.project.manifest, options));
+            ++built_targets;
+        }
     }
+
+    const auto elapsed{commands::common::elapsed_seconds(start)};
 
     util::output::argo_status(
         "Finished", util::output::Color::Green,
-        std::format("`{}` profile {} target(s) in {:.2f}s",
-                    release ? "release" : "dev",
-                    release ? "[optimized]" : "[unoptimized + debuginfo]",
-                    elapsed / 1000.0));
+        std::format("`{}` profile {} {} target(s) in {:.2f}s",
+                    commands::common::profile_name(release),
+                    commands::common::profile_descriptor(release),
+                    built_targets, elapsed));
     return util::Ok;
 }
 

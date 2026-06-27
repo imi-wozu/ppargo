@@ -193,6 +193,37 @@ auto parse_positive_int(std::string_view text, std::string_view option)
     return parsed;
 }
 
+auto trim_feature_token(std::string_view value) -> std::string_view {
+    while (!value.empty() &&
+           (value.front() == ' ' || value.front() == '\t' ||
+            value.front() == '\r' || value.front() == '\n')) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() &&
+           (value.back() == ' ' || value.back() == '\t' ||
+            value.back() == '\r' || value.back() == '\n')) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
+auto append_feature_values(std::vector<std::string>& features,
+                           std::string_view raw) -> util::Status {
+    while (true) {
+        const auto comma = raw.find(',');
+        const auto token = trim_feature_token(
+            comma == std::string_view::npos ? raw : raw.substr(0, comma));
+        if (!token.empty()) {
+            features.emplace_back(token);
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        raw.remove_prefix(comma + 1);
+    }
+    return util::Ok;
+}
+
 auto parse_global_options(std::span<char*> args)
     -> util::Result<GlobalParseResult> {
     GlobalParseResult result{};
@@ -450,6 +481,21 @@ concept HasKeepGoing = requires(T command) {
 };
 
 template <typename T>
+concept HasPackageSelection = requires(T command) {
+    { command.packages };
+    { command.workspace } -> std::convertible_to<bool&>;
+    { command.all_packages } -> std::convertible_to<bool&>;
+    { command.exclude_packages };
+};
+
+template <typename T>
+concept HasFeatureFlags = requires(T command) {
+    { command.features };
+    { command.all_features } -> std::convertible_to<bool&>;
+    { command.no_default_features } -> std::convertible_to<bool&>;
+};
+
+template <typename T>
 concept HasNoRun = requires(T command) {
     { command.no_run } -> std::convertible_to<bool&>;
 };
@@ -571,6 +617,47 @@ auto apply_shared_build_like_option(
                 command.benches_all = true;
             }
             return util::Ok;
+        case OptionAction::Package:
+            if constexpr (HasPackageSelection<T>) {
+                command.packages.push_back(*value);
+                return util::Ok;
+            }
+            break;
+        case OptionAction::Workspace:
+            if constexpr (HasPackageSelection<T>) {
+                command.workspace = true;
+                return util::Ok;
+            }
+            break;
+        case OptionAction::AllPackages:
+            if constexpr (HasPackageSelection<T>) {
+                command.all_packages = true;
+                return util::Ok;
+            }
+            break;
+        case OptionAction::Exclude:
+            if constexpr (HasPackageSelection<T>) {
+                command.exclude_packages.push_back(*value);
+                return util::Ok;
+            }
+            break;
+        case OptionAction::Features:
+            if constexpr (HasFeatureFlags<T>) {
+                return append_feature_values(command.features, *value);
+            }
+            break;
+        case OptionAction::AllFeatures:
+            if constexpr (HasFeatureFlags<T>) {
+                command.all_features = true;
+                return util::Ok;
+            }
+            break;
+        case OptionAction::NoDefaultFeatures:
+            if constexpr (HasFeatureFlags<T>) {
+                command.no_default_features = true;
+                return util::Ok;
+            }
+            break;
         case OptionAction::KeepGoing:
             if constexpr (HasKeepGoing<T>) {
                 command.keep_going = true;
@@ -730,8 +817,8 @@ auto finalize_command(cli::CheckCommand& command,
 
 auto finalize_command(cli::RunCommand& command,
                       const BuildLikeParseState& state,
-                      const util::output::OutputOptions&) -> util::Status {
-    GUARD(finalize_profile_base(command, state));
+                      const util::output::OutputOptions& output) -> util::Status {
+    GUARD(finalize_build_like_base(command, state, output));
     if (command.bin.has_value() && command.example.has_value()) {
         return std::unexpected(util::make_error(
             "the arguments '--bin' and '--example' cannot be used together"));
@@ -772,6 +859,9 @@ auto parse_build_like_command(std::span<char*> args, const CommandSpec& spec,
 
         if (passthrough) {
             if constexpr (std::same_as<CommandType, cli::TestCommand>) {
+                command.passthrough_args.push_back(std::string(value));
+                continue;
+            } else if constexpr (std::same_as<CommandType, cli::RunCommand>) {
                 command.passthrough_args.push_back(std::string(value));
                 continue;
             }

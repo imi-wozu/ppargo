@@ -1,19 +1,22 @@
-﻿#pragma once
+#pragma once
 
 #include <filesystem>
+#include <string>
 #include <vector>
-
-#include "core/manifest.hpp"
-#include "util/result.hpp"
-
 
 namespace build::source_scan {
 
-auto collect_sources(const std::filesystem::path& root,
-                     const core::Manifest& manifest)
-    -> util::Result<std::vector<std::filesystem::path>>;
+enum class SourceKind {
+    TranslationUnit,
+    ModuleInterfaceUnit,
+    ModuleImplementationUnit,
+};
+
+struct SourceUnit {
+    std::filesystem::path path;
+    SourceKind kind{SourceKind::TranslationUnit};
+    std::string provides;
+    std::vector<std::string> imports;
+};
 
 }  // namespace build::source_scan
-
-
-

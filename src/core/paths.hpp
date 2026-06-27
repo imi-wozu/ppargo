@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string_view>
 
 #include "core/manifest.hpp"
@@ -13,6 +14,21 @@ auto find_project_root(const std::filesystem::path& start = {}) noexcept
 
 auto build_dir(const std::filesystem::path& root, const Manifest& manifest,
                bool release) -> std::filesystem::path;
+auto build_dir(const std::filesystem::path& root, const Manifest& manifest,
+               bool release,
+               const std::optional<std::filesystem::path>& output_dir_override)
+    -> std::filesystem::path;
+auto effective_output_dir(
+    const Manifest& manifest,
+    const std::optional<std::filesystem::path>& output_dir_override)
+    -> std::filesystem::path;
+auto effective_module_output_dir(
+    const Manifest& manifest,
+    const std::optional<std::filesystem::path>& output_dir_override)
+    -> std::filesystem::path;
+
+auto runner_cache_dir(const std::filesystem::path& root,
+                      const Manifest& manifest) -> std::filesystem::path;
 
 auto binary_name(const Manifest& manifest) -> std::string;
 

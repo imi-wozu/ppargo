@@ -2,7 +2,6 @@
 
 #include <filesystem>
 
-
 namespace build::fingerprint {
 
 enum class RebuildReason {
@@ -28,6 +27,3 @@ auto evaluate_rebuild(const std::filesystem::path& source_root,
                       const std::filesystem::path& dep_file) -> RebuildDecision;
 
 }  // namespace build::fingerprint
-
-
-

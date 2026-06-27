@@ -2,6 +2,26 @@
 
 namespace core {
 
+auto effective_output_dir(
+    const Manifest& manifest,
+    const std::optional<std::filesystem::path>& output_dir_override)
+    -> std::filesystem::path {
+    if (output_dir_override.has_value()) {
+        return *output_dir_override;
+    }
+    return manifest.build.output_dir;
+}
+
+auto effective_module_output_dir(
+    const Manifest& manifest,
+    const std::optional<std::filesystem::path>& output_dir_override)
+    -> std::filesystem::path {
+    if (output_dir_override.has_value()) {
+        return *output_dir_override / "modules";
+    }
+    return manifest.build.module_output_dir;
+}
+
 auto find_project_root(const std::filesystem::path& start) noexcept
     -> util::Result<std::filesystem::path> {
     std::error_code ec;
@@ -32,7 +52,20 @@ auto find_project_root(const std::filesystem::path& start) noexcept
 
 auto build_dir(const std::filesystem::path& root, const Manifest& manifest,
                bool release) -> std::filesystem::path {
-    return root / manifest.build.output_dir / (release ? "release" : "debug");
+    return build_dir(root, manifest, release, std::nullopt);
+}
+
+auto build_dir(const std::filesystem::path& root, const Manifest& manifest,
+               bool release,
+               const std::optional<std::filesystem::path>& output_dir_override)
+    -> std::filesystem::path {
+    return root / effective_output_dir(manifest, output_dir_override) /
+           (release ? "release" : "debug");
+}
+
+auto runner_cache_dir(const std::filesystem::path& root,
+                      const Manifest& manifest) -> std::filesystem::path {
+    return root / manifest.build.output_dir / "runners";
 }
 
 auto binary_name(const Manifest& manifest) -> std::string {
